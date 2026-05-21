@@ -13,6 +13,7 @@
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
+    "verify:sidepanel": "pnpm build && node scripts/verify-sidepanel.mjs",
     "postinstall": "wxt prepare"
   },
   "devDependencies": {

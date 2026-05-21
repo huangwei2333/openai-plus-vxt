@@ -15,6 +15,17 @@ export const PANEL_STYLES = `
   max-height: calc(100vh - 88px);
 }
 
+.opx-shell-sidepanel {
+  position: static;
+  top: auto;
+  right: auto;
+  z-index: auto;
+  display: block;
+  width: 100%;
+  min-height: 100vh;
+  max-height: none;
+}
+
 .opx-panel {
   box-sizing: border-box;
   width: min(320px, calc(100vw - 42px));
@@ -30,6 +41,20 @@ export const PANEL_STYLES = `
   overscroll-behavior: contain;
   scrollbar-color: rgba(47, 209, 124, 0.55) rgba(15, 23, 42, 0.72);
   scrollbar-width: thin;
+}
+
+.opx-shell-sidepanel .opx-panel {
+  width: 100%;
+  min-height: 100vh;
+  max-height: none;
+  margin-right: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.opx-shell-sidepanel .opx-collapse-toggle {
+  display: none;
 }
 
 .opx-panel::-webkit-scrollbar {

@@ -2,8 +2,6 @@ import type { FeaturePanelHandle } from '../../app/types';
 import { loadAddressAutofillSettings, saveAddressAutofillSettings } from '../settings/state';
 import type { AddressAutofillSettings } from '../settings/types';
 import { ADDRESS_COUNTRY_OPTIONS } from './address-source';
-import { fillPayOpenAiAddressNow } from './pay-openai-autofill';
-import { fillPaypalAddressNow } from './paypal-autofill';
 import type { AddressProfile, RandomAddressResponse } from './types';
 
 interface AddressSection {
@@ -104,13 +102,12 @@ export function createAddressPanel(container: HTMLElement): FeaturePanelHandle {
   }
 
   async function fillCurrentPaymentPage(address: AddressProfile): Promise<string> {
-    if (location.hostname === 'pay.openai.com') {
-      return (await fillPayOpenAiAddressNow(address)).message;
-    }
-    if (location.hostname.endsWith('paypal.com')) {
-      return (await fillPaypalAddressNow(address, true, false)).message;
-    }
-    return '';
+    const response = await browser.runtime.sendMessage({
+      type: 'opx:active-tab-command',
+      command: 'fill-current-payment-page',
+      payload: { address },
+    });
+    return isActionResult(response) ? response.message : '';
   }
 
   function renderSettings(settings: AddressAutofillSettings): void {
@@ -311,5 +308,14 @@ function isRandomAddressResponse(value: unknown): value is RandomAddressResponse
       typeof value === 'object' &&
       typeof (value as RandomAddressResponse).ok === 'boolean' &&
       typeof (value as RandomAddressResponse).message === 'string',
+  );
+}
+
+function isActionResult(value: unknown): value is { ok: boolean; message: string } {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      typeof (value as { ok?: unknown }).ok === 'boolean' &&
+      typeof (value as { message?: unknown }).message === 'string',
   );
 }

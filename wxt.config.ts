@@ -3,7 +3,7 @@ import { defineConfig } from 'wxt';
 // See https://wxt.dev/api/config.html
 export default defineConfig({
   manifest: {
-    permissions: ['storage', 'tabs', 'scripting'],
+    permissions: ['storage', 'tabs', 'scripting', 'sidePanel'],
     host_permissions: [
       'http://127.0.0.1:8787/*',
       'http://localhost:8787/*',

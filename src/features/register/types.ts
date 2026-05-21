@@ -11,6 +11,7 @@ export interface PageState {
 }
 
 export interface RegisterController {
+  refreshPageState?(): Promise<void>;
   getPageState(): PageState;
   loadState(): Promise<RegisterState>;
   saveInput(rawInput: string): Promise<RegisterState>;

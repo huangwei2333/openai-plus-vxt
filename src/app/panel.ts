@@ -9,14 +9,18 @@ import { isFeatureTab, loadAppState, saveActiveTab, savePanelCollapsed } from '.
 import { PANEL_STYLES } from './styles';
 import type { FeaturePanelHandle, FeatureTab } from './types';
 
-export function createPanel(root: ShadowRoot, registerController: RegisterController): void {
+export interface PanelOptions {
+  mode?: 'floating' | 'sidepanel';
+}
+
+export function createPanel(root: ShadowRoot, registerController: RegisterController, options: PanelOptions = {}): void {
   root.innerHTML = '';
 
   const style = document.createElement('style');
   style.textContent = PANEL_STYLES;
 
   const shell = document.createElement('div');
-  shell.className = 'opx-shell';
+  shell.className = options.mode === 'sidepanel' ? 'opx-shell opx-shell-sidepanel' : 'opx-shell';
 
   const collapseButton = document.createElement('button');
   collapseButton.className = 'opx-collapse-toggle';
@@ -97,6 +101,7 @@ export function createPanel(root: ShadowRoot, registerController: RegisterContro
   };
 
   const updateState = async () => {
+    await registerController.refreshPageState?.();
     const saved = await loadAppState();
     activeTab = saved.activeTab;
     setCollapsed(saved.panelCollapsed);

@@ -12,6 +12,18 @@ type MessageSenderLike = {
   };
 };
 
+interface ActiveTabCommandMessage {
+  type: 'opx:active-tab-command';
+  command: string;
+  payload?: unknown;
+}
+
+interface ChromeSidePanelRuntime {
+  sidePanel?: {
+    setPanelBehavior?(behavior: { openPanelOnActionClick: boolean }): Promise<void> | void;
+  };
+}
+
 const DEFAULT_OUTLOOK_API_BASE = 'http://127.0.0.1:8787';
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_INTERVAL_MS = 5_000;
@@ -26,8 +38,12 @@ const ASSISTANT_URL_PREFIXES = [
 
 export default defineBackground(() => {
   installAssistantInjector();
+  installSidePanelBehavior();
 
   browser.runtime.onMessage.addListener((message: unknown, sender) => {
+    if (isActiveTabCommandMessage(message)) {
+      return sendCommandToActiveAssistantTab(message.command, message.payload);
+    }
     if (!isOutlookOtpMessage(message)) {
       if (isCheckoutLinkMessage(message)) {
         return createCheckoutLink(message.raw, message.options);
@@ -49,7 +65,8 @@ export default defineBackground(() => {
 });
 
 async function fetchChatGptSessionForSender(sender: MessageSenderLike): Promise<ChatGptSessionResponse> {
-  const tabId = sender.tab?.id;
+  const activeTab = sender.tab?.id ? null : await getActiveAssistantTab();
+  const tabId = sender.tab?.id ?? activeTab?.id;
   if (typeof tabId !== 'number') {
     return fetchChatGptSession();
   }
@@ -169,6 +186,20 @@ function installAssistantInjector(): void {
   });
 }
 
+function installSidePanelBehavior(): void {
+  const chromeRuntime = (globalThis as typeof globalThis & { chrome?: ChromeSidePanelRuntime }).chrome;
+  if (!chromeRuntime?.sidePanel?.setPanelBehavior) {
+    return;
+  }
+
+  const result = chromeRuntime.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  if (result && typeof result.catch === 'function') {
+    result.catch((error: unknown) => {
+      console.debug('[OPX] side panel action behavior skipped', error);
+    });
+  }
+}
+
 async function injectAssistant(tabId: number): Promise<void> {
   try {
     await browser.scripting.executeScript({
@@ -182,6 +213,66 @@ async function injectAssistant(tabId: number): Promise<void> {
 
 function isAssistantUrl(url: string | undefined): boolean {
   return ASSISTANT_URL_PREFIXES.some((prefix) => url?.startsWith(prefix));
+}
+
+function isActiveTabCommandMessage(message: unknown): message is ActiveTabCommandMessage {
+  return Boolean(
+    message &&
+      typeof message === 'object' &&
+      (message as { type?: unknown }).type === 'opx:active-tab-command' &&
+      typeof (message as { command?: unknown }).command === 'string',
+  );
+}
+
+async function getActiveAssistantTab(): Promise<{ id?: number; url?: string } | null> {
+  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (typeof tab?.id !== 'number' || !isAssistantUrl(tab.url)) {
+    return null;
+  }
+  return tab;
+}
+
+async function sendCommandToActiveAssistantTab(command: string, payload?: unknown): Promise<unknown> {
+  const tab = await getActiveAssistantTab();
+  if (typeof tab?.id !== 'number') {
+    if (command === 'get-page-state') {
+      return {
+        kind: 'unknown',
+        label: '当前标签页不是支持的 OpenAI / ChatGPT / PayPal 页面',
+        canFillEmail: false,
+        canFillOtp: false,
+        canFillProfile: false,
+      };
+    }
+    return {
+      ok: false,
+      message: '当前标签页不是支持的 OpenAI / ChatGPT / PayPal 页面',
+    };
+  }
+
+  await injectAssistant(tab.id);
+  try {
+    return await browser.tabs.sendMessage(tab.id, {
+      type: 'opx:content-command',
+      command,
+      payload,
+    });
+  } catch (error) {
+    if (command === 'get-page-state') {
+      return {
+        kind: 'unknown',
+        label: `当前标签页内容脚本未就绪：${String(error)}`,
+        canFillEmail: false,
+        canFillOtp: false,
+        canFillProfile: false,
+      };
+    }
+    return {
+      ok: false,
+      message: `无法连接当前标签页内容脚本：${String(error)}`,
+    };
+  }
 }
 
 async function waitForOutlookOtp(message: OutlookOtpMessage): Promise<OutlookOtpResponse> {
