@@ -21,7 +21,14 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
   const tokenValue = createSessionRow('Token', '未读取');
   sessionCard.append(emailValue.row, planValue.row, tokenValue.row);
 
+  const sessionActionRow = document.createElement('div');
+  sessionActionRow.className = 'opx-session-action-row';
+
   const refreshSessionButton = createButton('读取 ChatGPT session', 'opx-button opx-button-secondary');
+
+  const copySessionButton = createButton('复制 session', 'opx-button opx-button-secondary');
+  copySessionButton.title = '复制最近一次读取到的 ChatGPT session JSON';
+  sessionActionRow.append(refreshSessionButton, copySessionButton);
 
   const planSelect = createSelect([
     ['chatgptplusplan', 'ChatGPT Plus'],
@@ -82,8 +89,11 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
   linkStatus.className = 'opx-status';
   linkStatus.textContent = '等待读取 ChatGPT session。';
 
+  const manualHostedDialog = createManualHostedDialog();
+
   let generatedLink = '';
   let sessionAccessToken = '';
+  let sessionClipboardText = '';
   let sessionFetchInFlight = false;
   let sessionFetchedOnce = false;
 
@@ -114,6 +124,10 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
 
   refreshSessionButton.addEventListener('click', () => void refreshSession());
 
+  copySessionButton.addEventListener('click', async () => {
+    await copySessionToClipboard(linkStatus);
+  });
+
   tokenInput.addEventListener('paste', () => window.setTimeout(() => normalizeTokenInput(false), 0));
   tokenInput.addEventListener('input', () => {
     sessionAccessToken = '';
@@ -124,12 +138,6 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
 
   generateLinkButton.addEventListener('click', async () => {
     setStatus(linkStatus, '正在生成订阅链接...', 'pending');
-    const token = tokenInput.value.trim() ? normalizeTokenInput(true) : sessionAccessToken;
-    if (!token) {
-      setStatus(linkStatus, '没有 accessToken，请先读取 session 或手动粘贴。', 'error');
-      return;
-    }
-
     let options: CheckoutOptions;
     try {
       options = readCheckoutOptions();
@@ -139,27 +147,12 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
       return;
     }
 
-    let response: CheckoutLinkResponse;
-    try {
-      response = await browser.runtime.sendMessage({
-        type: 'opx:create-checkout-link',
-        raw: token,
-        options,
-      });
-    } catch (error) {
-      setStatus(linkStatus, `生成失败：${String(error)}`, 'error');
+    if (options.uiMode === 'hosted') {
+      manualHostedDialog.open(options);
       return;
     }
 
-    const link = response?.link || response?.url || '';
-    if (!isCheckoutLinkResponse(response) || !response.ok || !link) {
-      setStatus(linkStatus, response?.message || '生成失败：返回结果无效', 'error');
-      setGeneratedLink('');
-      return;
-    }
-
-    setGeneratedLink(link);
-    setStatus(linkStatus, response.message, 'ok');
+    await generateCheckoutLink(options);
   });
 
   copyLinkButton.addEventListener('click', async () => {
@@ -179,6 +172,7 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
   clearLinkButton.addEventListener('click', () => {
     tokenInput.value = '';
     sessionAccessToken = '';
+    setSessionClipboardText('');
     tokenHint.textContent = '切到提链接 tab 会读取 /api/auth/session；token 只在当前页面内使用。';
     tokenHint.classList.remove('is-ok');
     setGeneratedLink('');
@@ -190,7 +184,7 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
   container.append(
     linkSummary,
     sessionCard,
-    refreshSessionButton,
+    sessionActionRow,
     mainGrid,
     teamOptions,
     tokenInput,
@@ -199,9 +193,11 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
     createField('订阅链接', linkOutput),
     linkButtonRow,
     linkStatus,
+    manualHostedDialog.element,
   );
   void update();
   setGeneratedLink('');
+  setSessionClipboardText('');
   return { update, onShow };
 
   async function refreshSession(): Promise<void> {
@@ -217,11 +213,13 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
       });
       sessionFetchedOnce = true;
       if (!isChatGptSessionResponse(response)) {
+        setSessionClipboardText('');
         setStatus(linkStatus, 'session 返回结果无效', 'error');
         return;
       }
 
       const session = response.session;
+      setSessionClipboardText(serializeSessionForClipboard(response.raw, session));
       setSessionRows(session?.email || '', session?.planType || '', session?.accessToken || '');
       if (session?.accessToken) {
         sessionAccessToken = session.accessToken;
@@ -292,10 +290,198 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
     openLinkButton.disabled = !link;
   }
 
+  function setSessionClipboardText(text: string): void {
+    sessionClipboardText = text;
+    copySessionButton.disabled = !text;
+  }
+
   function setSessionRows(email: string, planType: string, accessToken: string): void {
     emailValue.value.textContent = email || '未读取';
     planValue.value.textContent = planType || '未读取';
     tokenValue.value.textContent = accessToken ? '已获取' : '未获取';
+  }
+
+  async function generateCheckoutLink(options: CheckoutOptions): Promise<void> {
+    const token = tokenInput.value.trim() ? normalizeTokenInput(true) : sessionAccessToken;
+    if (!token) {
+      setStatus(linkStatus, '没有 accessToken，请先读取 session 或手动粘贴。', 'error');
+      return;
+    }
+
+    let response: CheckoutLinkResponse;
+    try {
+      response = await browser.runtime.sendMessage({
+        type: 'opx:create-checkout-link',
+        raw: token,
+        options,
+      });
+    } catch (error) {
+      setStatus(linkStatus, `生成失败：${String(error)}`, 'error');
+      return;
+    }
+
+    const link = response?.link || response?.url || '';
+    if (!isCheckoutLinkResponse(response) || !response.ok || !link) {
+      setStatus(linkStatus, response?.message || '生成失败：返回结果无效', 'error');
+      setGeneratedLink('');
+      return;
+    }
+
+    setGeneratedLink(link);
+    if (options.uiMode === 'hosted') {
+      window.open(link, '_blank', 'noopener,noreferrer');
+      setStatus(linkStatus, `${response.message}，已自动打开长链接`, 'ok');
+      return;
+    }
+    setStatus(linkStatus, response.message, 'ok');
+  }
+
+  async function copySessionToClipboard(statusElement: HTMLElement): Promise<void> {
+    if (!sessionClipboardText) {
+      setStatus(statusElement, '没有可复制的 session，请先读取。', 'error');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(sessionClipboardText);
+      setStatus(statusElement, '已复制 session', 'ok');
+    } catch (error) {
+      setStatus(statusElement, `复制 session 失败：${String(error)}`, 'error');
+    }
+  }
+
+  function createManualHostedDialog(): {
+    element: HTMLElement;
+    open(options: CheckoutOptions): void;
+  } {
+    const overlay = document.createElement('div');
+    overlay.className = 'opx-settings-overlay opx-hosted-link-overlay';
+    overlay.hidden = true;
+
+    const dialog = document.createElement('section');
+    dialog.className = 'opx-settings-dialog opx-hosted-link-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', '生成长链接');
+
+    const header = document.createElement('div');
+    header.className = 'opx-settings-header';
+    const titleGroup = document.createElement('div');
+    titleGroup.className = 'opx-settings-title';
+    const title = document.createElement('strong');
+    title.textContent = '生成长链接';
+    const closeButton = createButton('×', 'opx-icon-button');
+    closeButton.title = '关闭';
+    closeButton.setAttribute('aria-label', '关闭');
+    titleGroup.append(title);
+    header.append(titleGroup, closeButton);
+
+    const manualLinkInput = document.createElement('textarea');
+    manualLinkInput.className = 'opx-textarea opx-hosted-link-input';
+    manualLinkInput.placeholder = '粘贴长链接；留空点继续会自动生成';
+    manualLinkInput.spellcheck = false;
+
+    const hint = document.createElement('div');
+    hint.className = 'opx-hint';
+    hint.textContent = '如需在外部生成长链接，可先复制 session；输入框为空时会保留原自动生成逻辑。';
+
+    const dialogStatus = document.createElement('div');
+    dialogStatus.className = 'opx-status';
+
+    const actions = document.createElement('div');
+    actions.className = 'opx-button-row opx-hosted-link-actions';
+    const copyButton = createButton('复制 session', 'opx-button opx-button-secondary');
+    const continueButton = createButton('继续', 'opx-button');
+    actions.append(copyButton, continueButton);
+
+    dialog.append(header, createField('长链接', manualLinkInput), hint, actions, dialogStatus);
+    overlay.append(dialog);
+
+    let pendingOptions: CheckoutOptions | null = null;
+
+    closeButton.addEventListener('click', close);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) {
+        close();
+      }
+    });
+    copyButton.addEventListener('click', async () => {
+      await copySessionToClipboard(dialogStatus);
+    });
+    continueButton.addEventListener('click', async () => {
+      const options = pendingOptions;
+      if (!options) {
+        close();
+        return;
+      }
+
+      const manualLink = manualLinkInput.value.trim();
+      if (manualLink) {
+        let normalizedManualLink: string;
+        try {
+          normalizedManualLink = normalizeManualHostedLink(manualLink);
+        } catch (error) {
+          setStatus(dialogStatus, errorMessage(error), 'error');
+          return;
+        }
+        setGeneratedLink(normalizedManualLink);
+        window.open(normalizedManualLink, '_blank', 'noopener,noreferrer');
+        setStatus(linkStatus, '已打开输入的长链接', 'ok');
+        close();
+        return;
+      }
+
+      close();
+      setStatus(linkStatus, '正在自动生成长链接...', 'pending');
+      await generateCheckoutLink(options);
+    });
+
+    function close(): void {
+      overlay.hidden = true;
+      pendingOptions = null;
+      dialogStatus.textContent = '';
+      dialogStatus.removeAttribute('data-type');
+    }
+
+    return {
+      element: overlay,
+      open(options: CheckoutOptions): void {
+        pendingOptions = options;
+        manualLinkInput.value = '';
+        dialogStatus.textContent = '';
+        dialogStatus.removeAttribute('data-type');
+        overlay.hidden = false;
+        window.setTimeout(() => manualLinkInput.focus(), 0);
+      },
+    };
+  }
+}
+
+function normalizeManualHostedLink(value: string): string {
+  const link = value.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(link);
+  } catch {
+    throw new Error('长链接格式不正确，请粘贴完整 URL。');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('长链接只支持 http 或 https。');
+  }
+  return link;
+}
+
+function serializeSessionForClipboard(raw: unknown, session: unknown): string {
+  const value = raw === undefined ? session : raw;
+  if (value === undefined || value === null) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return '';
   }
 }
 

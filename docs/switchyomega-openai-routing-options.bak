@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 2,
+  "-enableQuickSwitch": true,
+  "-refreshOnProfileChange": true,
+  "-startupProfileName": "OpenAI_Checkout_Routing",
+  "-quickSwitchProfiles": [
+    "OpenAI_Checkout_Routing",
+    "JP_Register",
+    "US_Pay",
+    "system",
+    "direct"
+  ],
+  "-revertProxyChanges": true,
+  "-confirmDeletion": true,
+  "-showInspectMenu": true,
+  "-addConditionsToBottom": false,
+  "-showExternalProfile": true,
+  "-downloadInterval": 1440,
+  "+JP_Register": {
+    "name": "JP_Register",
+    "profileType": "FixedProfile",
+    "color": "#8BC34A",
+    "bypassList": [
+      {
+        "conditionType": "BypassCondition",
+        "pattern": "127.0.0.1"
+      },
+      {
+        "conditionType": "BypassCondition",
+        "pattern": "::1"
+      },
+      {
+        "conditionType": "BypassCondition",
+        "pattern": "localhost"
+      }
+    ],
+    "fallbackProxy": {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 7898
+    }
+  },
+  "+US_Pay": {
+    "name": "US_Pay",
+    "profileType": "FixedProfile",
+    "color": "#03A9F4",
+    "bypassList": [
+      {
+        "conditionType": "BypassCondition",
+        "pattern": "127.0.0.1"
+      },
+      {
+        "conditionType": "BypassCondition",
+        "pattern": "::1"
+      },
+      {
+        "conditionType": "BypassCondition",
+        "pattern": "localhost"
+      }
+    ],
+    "fallbackProxy": {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 7899
+    }
+  },
+  "+OpenAI_Checkout_Routing": {
+    "name": "OpenAI_Checkout_Routing",
+    "profileType": "SwitchProfile",
+    "color": "#673AB7",
+    "defaultProfileName": "system",
+    "rules": [
+      {
+        "condition": {
+          "conditionType": "UrlWildcardCondition",
+          "pattern": "https://chatgpt.com/backend-api/payments/checkout*"
+        },
+        "profileName": "JP_Register"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "www.paypal.com"
+        },
+        "profileName": "US_Pay"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*.paypal.com"
+        },
+        "profileName": "US_Pay"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*.recaptcha.net"
+        },
+        "profileName": "US_Pay"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "checkout.stripe.com"
+        },
+        "profileName": "US_Pay"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*.midtrans.com"
+        },
+        "profileName": "US_Pay"
+      }
+    ]
+  }
+}

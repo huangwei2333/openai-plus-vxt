@@ -15,6 +15,12 @@ export interface RegisterController {
   getPageState(): PageState;
   loadState(): Promise<RegisterState>;
   saveInput(rawInput: string): Promise<RegisterState>;
+  openRegisterPage(): Promise<ActionResult>;
+  addInputToEmailList(): Promise<ActionResult>;
+  setEmailSelected(emailItemId: string, selected: boolean): Promise<RegisterState>;
+  toggleEmailExpanded(emailItemId: string): Promise<RegisterState>;
+  removeEmailItem(emailItemId: string): Promise<RegisterState>;
+  generateAliasAndFillEmail(): Promise<ActionResult>;
   fillEmailFromInput(): Promise<ActionResult>;
   fillOtp(code: string): Promise<ActionResult>;
   waitForOutlookOtp(): Promise<ActionResult>;
@@ -27,6 +33,7 @@ export interface RegisterState {
   email: string;
   accountLine: string;
   inputMode: AccountInputMode;
+  emailItems: RegisterEmailItem[];
   autoOtp: boolean;
   apiBase: string;
   otpRequestedAt: number;
@@ -34,6 +41,29 @@ export interface RegisterState {
 }
 
 export type AccountInputMode = 'empty' | 'email' | 'outlook-line' | 'invalid';
+
+export type RegisterEmailAliasCategory =
+  | 'plus-gmail'
+  | 'dotted-plus-gmail'
+  | 'plus-googlemail'
+  | 'dotted-plus-googlemail';
+
+export interface RegisterEmailAlias {
+  id: string;
+  email: string;
+  category: RegisterEmailAliasCategory;
+  createdAt: number;
+}
+
+export interface RegisterEmailItem {
+  id: string;
+  email: string;
+  accountLine: string;
+  inputMode: Exclude<AccountInputMode, 'empty' | 'invalid'>;
+  selected: boolean;
+  expanded: boolean;
+  aliases: RegisterEmailAlias[];
+}
 
 export interface ParsedAccountInput {
   ok: boolean;

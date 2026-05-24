@@ -60,6 +60,20 @@ export async function fetchRandomAddress(countryCode?: string, city?: string): P
   }
 }
 
+export function hasCompleteCreditCardInfo(value: AddressProfile['creditCard'] | null | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const number = clean(value.number).replace(/\D/g, '');
+  const cvv = clean(value.cvv).replace(/\D/g, '');
+  const expires = clean(value.expires);
+  return number.length >= 12 &&
+    number.length <= 19 &&
+    cvv.length >= 3 &&
+    cvv.length <= 4 &&
+    hasValidExpiryShape(expires);
+}
+
 async function fetchMeiguoAddress(country: AddressCountryOption, city: string): Promise<AddressProfile> {
   const response = await fetch(MEIGUO_ADDRESS_ENDPOINT, {
     method: 'POST',
@@ -174,14 +188,7 @@ function createFallbackAddress(country: AddressCountryOption, city: string): Add
       companySize: '',
       companyName: '',
     },
-    creditCard: {
-      type: '',
-      number: '',
-      cvv: '',
-      expires: '',
-      last4: '',
-      maskedNumber: '',
-    },
+    creditCard: createFallbackCreditCard(),
     source: 'fallback',
     fetchedAt: Date.now(),
   };
@@ -230,7 +237,7 @@ function normalizePhone(value: string): string {
 function normalizeCreditCard(source: MeiguoAddressRecord): AddressProfile['creditCard'] {
   const number = clean(source.Credit_Card_Number).replace(/\D/g, '');
   const last4 = number.length >= 4 ? number.slice(-4) : '';
-  return {
+  const creditCard = {
     type: clean(source.Credit_Card_Type),
     number,
     cvv: clean(source.CVV2),
@@ -238,6 +245,55 @@ function normalizeCreditCard(source: MeiguoAddressRecord): AddressProfile['credi
     last4,
     maskedNumber: last4 ? `**** **** **** ${last4}` : '',
   };
+  return hasCompleteCreditCardInfo(creditCard) ? creditCard : createFallbackCreditCard(creditCard.type);
+}
+
+function createFallbackCreditCard(type = 'Visa'): AddressProfile['creditCard'] {
+  const body = '4' + randomDigits(14);
+  const number = body + luhnCheckDigit(body);
+  const last4 = number.slice(-4);
+  return {
+    type: type || 'Visa',
+    number,
+    cvv: randomDigits(3),
+    expires: createFutureExpiry(),
+    last4,
+    maskedNumber: `**** **** **** ${last4}`,
+  };
+}
+
+function createFutureExpiry(): string {
+  const now = new Date();
+  const month = String(randomInt(1, 12)).padStart(2, '0');
+  const year = String(now.getFullYear() + randomInt(2, 5)).slice(-2);
+  return `${month}/${year}`;
+}
+
+function hasValidExpiryShape(value: string): boolean {
+  const parts = value.match(/\d+/g) || [];
+  if (parts.length < 2) {
+    return false;
+  }
+  const month = Number(parts[0]);
+  const year = parts[1];
+  return month >= 1 && month <= 12 && (year.length === 2 || year.length === 4);
+}
+
+function luhnCheckDigit(body: string): string {
+  const sum = body
+    .split('')
+    .reverse()
+    .reduce((total, char, index) => {
+      let value = Number(char);
+      if (index % 2 === 0) {
+        value *= 2;
+        if (value > 9) {
+          value -= 9;
+        }
+      }
+      return total + value;
+    }, 0);
+  return String((10 - (sum % 10)) % 10);
 }
 
 function createAddressId(): string {

@@ -22,8 +22,10 @@ export const PANEL_STYLES = `
   z-index: auto;
   display: block;
   width: 100%;
-  min-height: 100vh;
-  max-height: none;
+  height: 100vh;
+  min-height: 0;
+  max-height: 100vh;
+  overflow: hidden;
 }
 
 .opx-panel {
@@ -45,12 +47,14 @@ export const PANEL_STYLES = `
 
 .opx-shell-sidepanel .opx-panel {
   width: 100%;
-  min-height: 100vh;
-  max-height: none;
+  height: 100vh;
+  min-height: 0;
+  max-height: 100vh;
   margin-right: 0;
   border: 0;
   border-radius: 0;
   box-shadow: none;
+  overflow-y: auto;
 }
 
 .opx-shell-sidepanel .opx-collapse-toggle {
@@ -226,12 +230,39 @@ export const PANEL_STYLES = `
   color: #93e4bd;
 }
 
+.opx-mini-button-danger {
+  border: 1px solid rgba(248, 113, 113, 0.46);
+  background: rgba(127, 29, 29, 0.24);
+  color: #fca5a5;
+}
+
 .opx-view {
   display: block;
 }
 
 .opx-view[hidden] {
   display: none;
+}
+
+.opx-flow-section {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 10px;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.opx-flow-section-title {
+  color: #bbf7d0;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 16px;
+}
+
+.opx-flow-section-content {
+  min-width: 0;
 }
 
 .opx-empty-view {
@@ -329,6 +360,13 @@ export const PANEL_STYLES = `
   word-break: break-word;
 }
 
+.opx-session-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 6px;
+  align-items: start;
+}
+
 .opx-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -371,6 +409,28 @@ export const PANEL_STYLES = `
   grid-template-columns: minmax(0, 1fr);
 }
 
+.opx-address-country-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.opx-address-random-city {
+  margin-bottom: 0;
+}
+
+.opx-account-actions {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.opx-account-select-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  color: #cbd5e1;
+  font-size: 12px;
+  user-select: none;
+}
+
 .opx-button {
   box-sizing: border-box;
   width: 100%;
@@ -392,9 +452,119 @@ export const PANEL_STYLES = `
   border: 1px solid rgba(47, 209, 124, 0.36);
 }
 
+.opx-button-danger {
+  background: #ef4444;
+  color: #fff7ed;
+}
+
 .opx-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.opx-register-email-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px 58px;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.opx-register-email-input-row .opx-input,
+.opx-register-email-input-row .opx-button {
+  margin-bottom: 8px;
+}
+
+.opx-email-list-summary {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 8px 9px;
+  border: 1px solid rgba(47, 209, 124, 0.28);
+  border-radius: 6px;
+  background: rgba(20, 83, 45, 0.2);
+  color: #dcfce7;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 16px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opx-email-list {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.opx-email-item {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.62);
+  overflow: hidden;
+}
+
+.opx-email-item-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 42px 46px;
+  gap: 6px;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 7px;
+}
+
+.opx-email-toggle {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #e5f7ef;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opx-email-count {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 14px;
+  text-align: right;
+}
+
+.opx-email-delete {
+  height: 24px;
+  width: 100%;
+}
+
+.opx-email-aliases {
+  display: grid;
+  gap: 6px;
+  padding: 0 8px 8px 35px;
+}
+
+.opx-email-alias-group {
+  display: grid;
+  gap: 2px;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.opx-email-alias-group strong {
+  color: #bbf7d0;
+  font-weight: 700;
+}
+
+.opx-email-alias-group span {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .opx-status {
@@ -411,6 +581,429 @@ export const PANEL_STYLES = `
 
 .opx-status[data-type="error"] {
   color: #fca5a5;
+}
+
+.opx-workflow-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  min-height: 22px;
+  margin: 0 0 8px;
+  padding: 2px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.opx-workflow-email-copy {
+  max-width: 176px;
+  height: 22px;
+  overflow: hidden;
+  border: 0;
+  border-left: 1px solid rgba(148, 163, 184, 0.28);
+  padding: 0 0 0 7px;
+  background: transparent;
+  color: #c4b5fd;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opx-workflow-email-copy:hover,
+.opx-workflow-email-copy.is-copied {
+  color: #ddd6fe;
+}
+
+.opx-workflow-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.opx-workflow-actions .opx-button {
+  margin-bottom: 8px;
+}
+
+.opx-workflow-tiny-button {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #cbd5e1;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.opx-workflow-tiny-button {
+  width: 40px;
+  height: 24px;
+  padding: 0;
+}
+
+.opx-workflow-tiny-button:hover {
+  border-color: rgba(47, 209, 124, 0.48);
+  color: #dcfce7;
+}
+
+.opx-workflow-tiny-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.opx-workflow-session-field {
+  margin-bottom: 4px;
+}
+
+.opx-workflow-session-input {
+  height: 54px;
+  min-height: 54px;
+  max-height: 54px;
+  resize: none;
+}
+
+.opx-workflow-account-input {
+  height: 96px;
+  min-height: 96px;
+  max-height: 132px;
+}
+
+.opx-workflow-phone {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.58);
+  color: #bfdbfe;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opx-workflow-list {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 8px;
+}
+
+.opx-workflow-section {
+  display: grid;
+  gap: 8px;
+}
+
+.opx-workflow-section-header {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 62px;
+  gap: 8px;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 2px;
+}
+
+.opx-workflow-section-title {
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 16px;
+}
+
+.opx-workflow-section-state {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: right;
+}
+
+.opx-workflow-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #2fd17c;
+}
+
+.opx-workflow-checkbox:disabled {
+  opacity: 0.55;
+}
+
+.opx-workflow-group {
+  display: grid;
+  gap: 5px;
+  padding: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+.opx-workflow-group-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 50px;
+  gap: 7px;
+  align-items: center;
+}
+
+.opx-workflow-group-label {
+  min-width: 0;
+  color: #dbeafe;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 16px;
+}
+
+.opx-workflow-group-state {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 15px;
+  text-align: right;
+}
+
+.opx-workflow-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 54px 42px;
+  gap: 7px;
+  align-items: center;
+  padding-left: 4px;
+}
+
+.opx-workflow-step-num {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.opx-workflow-step-label {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.62);
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.opx-workflow-step-state {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 15px;
+  text-align: right;
+}
+
+.opx-workflow-step[data-selected="false"] {
+  opacity: 0.72;
+}
+
+.opx-workflow-step[data-status="running"] .opx-workflow-step-num,
+.opx-workflow-step[data-status="running"] .opx-workflow-step-label {
+  border-color: rgba(251, 191, 36, 0.54);
+  color: #fbbf24;
+}
+
+.opx-workflow-step[data-status="completed"] .opx-workflow-step-num,
+.opx-workflow-step[data-status="completed"] .opx-workflow-step-label,
+.opx-workflow-step[data-status="skipped"] .opx-workflow-step-num,
+.opx-workflow-step[data-status="skipped"] .opx-workflow-step-label {
+  border-color: rgba(47, 209, 124, 0.54);
+  color: #86efac;
+}
+
+.opx-workflow-step[data-status="failed"] .opx-workflow-step-num,
+.opx-workflow-step[data-status="failed"] .opx-workflow-step-label {
+  border-color: rgba(248, 113, 113, 0.54);
+  color: #fca5a5;
+}
+
+.opx-workflow-continue {
+  width: 44px;
+  height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: #2fd17c;
+  color: #04130a;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.opx-workflow-code-copy {
+  width: 72px;
+  height: 24px;
+  border: 1px solid rgba(47, 209, 124, 0.46);
+  border-radius: 5px;
+  background: rgba(47, 209, 124, 0.12);
+  color: #bbf7d0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.opx-workflow-code-copy:hover,
+.opx-workflow-code-copy.is-copied {
+  border-color: rgba(47, 209, 124, 0.78);
+  background: rgba(47, 209, 124, 0.2);
+  color: #dcfce7;
+}
+
+.opx-otp-dialog[hidden] {
+  display: none;
+}
+
+.opx-otp-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(2, 6, 23, 0.66);
+}
+
+.opx-otp-dialog-panel {
+  box-sizing: border-box;
+  width: min(300px, calc(100vw - 48px));
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 8px;
+  background: #0b1120;
+  box-shadow: 0 18px 44px rgba(2, 6, 23, 0.42);
+}
+
+.opx-otp-dialog-title {
+  margin: 0 0 10px;
+  color: #e5f7ef;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 20px;
+}
+
+.opx-otp-dialog-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.opx-otp-dialog-actions .opx-button {
+  margin-bottom: 0;
+}
+
+.opx-account-list {
+  display: grid;
+  gap: 9px;
+  margin: 0 0 8px;
+}
+
+.opx-account-group {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.34);
+}
+
+.opx-account-group-title {
+  min-width: 0;
+  color: #bbf7d0;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.opx-account-group-list {
+  display: grid;
+  gap: 7px;
+}
+
+.opx-account-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 72px;
+  gap: 8px;
+  align-items: center;
+  min-height: 52px;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.62);
+}
+
+.opx-account-row[data-session-expired="true"] {
+  border-color: rgba(251, 191, 36, 0.42);
+}
+
+.opx-account-row[data-plan-expired="true"] {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.opx-account-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.opx-account-main strong {
+  min-width: 0;
+  color: #e5f7ef;
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.opx-account-main span {
+  min-width: 0;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 15px;
+  overflow-wrap: anywhere;
+}
+
+.opx-account-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.opx-account-chip-row span {
+  width: fit-content;
+  padding: 2px 6px;
+  border: 1px solid rgba(47, 209, 124, 0.28);
+  border-radius: 999px;
+  background: rgba(20, 83, 45, 0.18);
+  color: #bbf7d0;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+.opx-account-row-actions {
+  display: grid;
+  gap: 4px;
 }
 
 .opx-settings-overlay {
@@ -686,8 +1279,21 @@ export const PANEL_STYLES = `
   border-style: dashed;
 }
 
+.opx-sms-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 6px;
+  align-items: start;
+}
+
 .opx-sms-input {
-  min-height: 88px;
+  min-height: 52px;
+  max-height: 72px;
+  resize: vertical;
+}
+
+.opx-sms-input-row .opx-button {
+  margin-bottom: 8px;
 }
 
 .opx-sms-actions {
@@ -702,7 +1308,7 @@ export const PANEL_STYLES = `
 .opx-sms-target-row {
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) 84px;
   gap: 8px;
   align-items: center;
   min-height: 44px;
@@ -710,6 +1316,12 @@ export const PANEL_STYLES = `
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 6px;
   background: rgba(15, 23, 42, 0.72);
+  cursor: pointer;
+}
+
+.opx-sms-target-row[data-selected="true"] {
+  border-color: rgba(147, 228, 189, 0.62);
+  background: rgba(20, 83, 45, 0.18);
 }
 
 .opx-sms-target-row[data-status="found"] {
@@ -720,6 +1332,13 @@ export const PANEL_STYLES = `
 .opx-sms-target-row[data-status="error"] {
   border-color: rgba(248, 113, 113, 0.42);
   background: rgba(127, 29, 29, 0.2);
+}
+
+.opx-sms-target-radio {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #2fd17c;
 }
 
 .opx-sms-target-main {
@@ -744,6 +1363,17 @@ export const PANEL_STYLES = `
   color: #94a3b8;
   font-size: 11px;
   line-height: 15px;
+}
+
+.opx-sms-target-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+.opx-sms-target-actions .opx-mini-button {
+  width: 100%;
+  height: 24px;
 }
 
 .opx-sms-code-chip {

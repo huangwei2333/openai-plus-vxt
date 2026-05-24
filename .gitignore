@@ -12,8 +12,12 @@ node_modules
 stats.html
 stats-*.json
 .wxt
+.tmp-test/
 .chrome-debug/
 web-ext.config.ts
+native-host/*.exe
+native-host/com.openai_plus_vxt.local_store.json
+native-host/opx-native-host.node-path.txt
 
 # Editor directories and files
 .vscode/*

@@ -3,10 +3,14 @@ import { defineConfig } from 'wxt';
 // See https://wxt.dev/api/config.html
 export default defineConfig({
   manifest: {
-    permissions: ['storage', 'tabs', 'scripting', 'sidePanel'],
+    permissions: ['storage', 'tabs', 'scripting', 'sidePanel', 'nativeMessaging', 'permissions'],
     host_permissions: [
       'http://127.0.0.1:8787/*',
       'http://localhost:8787/*',
+      'http://127.0.0.1:8788/*',
+      'http://localhost:8788/*',
+      'http://a.62-us.com/*',
+      'https://a.62-us.com/*',
       'https://auth.openai.com/*',
       'https://chatgpt.com/*',
       'https://pay.openai.com/*',
@@ -15,6 +19,10 @@ export default defineConfig({
       'https://www.meiguodizhi.com/*',
       'https://api.github.com/*',
       'https://mail-api.yuecheng.shop/*',
+    ],
+    optional_host_permissions: [
+      'http://*/*',
+      'https://*/*',
     ],
   },
 });

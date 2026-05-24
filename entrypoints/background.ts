@@ -1,15 +1,20 @@
 import { fetchRandomAddress } from '../src/features/address-autofill/address-source';
+import { createNoActiveAssistantActionResult, createNoActiveAssistantPageState } from '../src/app/active-tab-fallback';
 import type { RandomAddressMessage } from '../src/features/address-autofill/types';
 import { createCheckoutLink } from '../src/features/link-extractor/checkout';
-import { fetchChatGptSession } from '../src/features/link-extractor/session';
+import { createNoSessionTabResponse, selectActiveAssistantTab, selectActiveSessionTab } from '../src/features/link-extractor/session-tab';
 import type { ChatGptSessionMessage, ChatGptSessionResponse, CheckoutLinkMessage } from '../src/features/link-extractor/types';
+import { requestLocalStore } from '../src/features/local-store/client';
+import { isLocalStoreMessage } from '../src/features/local-store/types';
 import type { OutlookOtpMessage, OutlookOtpResponse } from '../src/features/register/types';
 import type { SmsRelayFetchMessage, SmsRelayFetchResponse } from '../src/features/sms/types';
 
 type MessageSenderLike = {
   tab?: {
     id?: number;
+    incognito?: boolean;
   };
+  incognito?: boolean;
 };
 
 interface ActiveTabCommandMessage {
@@ -42,7 +47,7 @@ export default defineBackground(() => {
 
   browser.runtime.onMessage.addListener((message: unknown, sender) => {
     if (isActiveTabCommandMessage(message)) {
-      return sendCommandToActiveAssistantTab(message.command, message.payload);
+      return sendCommandToActiveAssistantTab(message.command, message.payload, senderIncognito(sender));
     }
     if (!isOutlookOtpMessage(message)) {
       if (isCheckoutLinkMessage(message)) {
@@ -57,6 +62,9 @@ export default defineBackground(() => {
       if (isSmsRelayFetchMessage(message)) {
         return fetchSmsRelay(message.url);
       }
+      if (isLocalStoreMessage(message)) {
+        return requestLocalStore(message);
+      }
       return undefined;
     }
 
@@ -65,10 +73,11 @@ export default defineBackground(() => {
 });
 
 async function fetchChatGptSessionForSender(sender: MessageSenderLike): Promise<ChatGptSessionResponse> {
-  const activeTab = sender.tab?.id ? null : await getActiveAssistantTab();
+  const incognito = sender.tab?.incognito ?? sender.incognito;
+  const activeTab = sender.tab?.id ? null : await getActiveSessionTab(incognito);
   const tabId = sender.tab?.id ?? activeTab?.id;
   if (typeof tabId !== 'number') {
-    return fetchChatGptSession();
+    return createNoSessionTabResponse(incognito);
   }
 
   try {
@@ -122,6 +131,7 @@ async function fetchChatGptSessionInTab(): Promise<ChatGptSessionResponse> {
       ok: false,
       message: session.email ? '已读取账号信息，但 session 内没有 accessToken' : '未读取到登录 session',
       session,
+      raw: data,
     };
   }
 
@@ -129,6 +139,7 @@ async function fetchChatGptSessionInTab(): Promise<ChatGptSessionResponse> {
     ok: true,
     message: '已从当前标签页读取 ChatGPT session',
     session,
+    raw: data,
   };
 
   function extractSessionInfo(data: Record<string, unknown>) {
@@ -138,6 +149,14 @@ async function fetchChatGptSessionInTab(): Promise<ChatGptSessionResponse> {
       email: stringValue(user.email),
       planType: stringValue(account.planType) || stringValue(account.plan_type),
       accessToken: stringValue(data.accessToken),
+      idToken: stringValue(data.idToken),
+      refreshToken: stringValue(data.refreshToken),
+      accountId: stringValue(account.id) || stringValue(account.accountId) || stringValue(account.account_id),
+      planExpiresAt: stringValue(account.expires) ||
+        stringValue(account.expiresAt) ||
+        stringValue(account.planExpiresAt) ||
+        stringValue(account.plan_expires_at),
+      sessionExpiredAt: stringValue(data.expired) || stringValue(data.expires),
       fetchedAt: Date.now(),
     };
   }
@@ -186,6 +205,10 @@ function installAssistantInjector(): void {
   });
 }
 
+function senderIncognito(sender: MessageSenderLike): boolean | undefined {
+  return typeof sender.incognito === 'boolean' ? sender.incognito : sender.tab?.incognito;
+}
+
 function installSidePanelBehavior(): void {
   const chromeRuntime = (globalThis as typeof globalThis & { chrome?: ChromeSidePanelRuntime }).chrome;
   if (!chromeRuntime?.sidePanel?.setPanelBehavior) {
@@ -224,31 +247,23 @@ function isActiveTabCommandMessage(message: unknown): message is ActiveTabComman
   );
 }
 
-async function getActiveAssistantTab(): Promise<{ id?: number; url?: string } | null> {
+async function getActiveAssistantTab(incognito?: boolean): Promise<{ id?: number; url?: string; incognito?: boolean } | null> {
   const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-  const tab = tabs[0];
-  if (typeof tab?.id !== 'number' || !isAssistantUrl(tab.url)) {
-    return null;
-  }
-  return tab;
+  return selectActiveAssistantTab(tabs, incognito);
 }
 
-async function sendCommandToActiveAssistantTab(command: string, payload?: unknown): Promise<unknown> {
-  const tab = await getActiveAssistantTab();
+async function getActiveSessionTab(incognito?: boolean): Promise<{ id?: number; url?: string; incognito?: boolean } | null> {
+  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+  return selectActiveSessionTab(tabs, incognito);
+}
+
+async function sendCommandToActiveAssistantTab(command: string, payload?: unknown, incognito?: boolean): Promise<unknown> {
+  const tab = await getActiveAssistantTab(incognito);
   if (typeof tab?.id !== 'number') {
     if (command === 'get-page-state') {
-      return {
-        kind: 'unknown',
-        label: '当前标签页不是支持的 OpenAI / ChatGPT / PayPal 页面',
-        canFillEmail: false,
-        canFillOtp: false,
-        canFillProfile: false,
-      };
+      return createNoActiveAssistantPageState();
     }
-    return {
-      ok: false,
-      message: '当前标签页不是支持的 OpenAI / ChatGPT / PayPal 页面',
-    };
+    return createNoActiveAssistantActionResult();
   }
 
   await injectAssistant(tab.id);
@@ -440,6 +455,7 @@ async function fetchSmsRelay(url: string): Promise<SmsRelayFetchResponse> {
     response = await fetch(parsedUrl.toString(), {
       method: 'GET',
       cache: 'no-store',
+      redirect: 'manual',
     });
   } catch (error) {
     return {
@@ -449,6 +465,20 @@ async function fetchSmsRelay(url: string): Promise<SmsRelayFetchResponse> {
   }
 
   const status = response.status;
+  if (status >= 300 && status < 400) {
+    const location = response.headers.get('location') || '';
+    const redirectUrl = resolveRedirectUrl(parsedUrl, location);
+    if (redirectUrl) {
+      return {
+        ok: false,
+        code: 'sms-relay-redirect',
+        status,
+        redirectUrl,
+        message: '接码 API 发生跳转，需要授权跳转后的域名',
+      };
+    }
+  }
+
   const { parsed: detail, text } = await readSmsRelayResponse(response);
   if (!response.ok) {
     return {
@@ -481,6 +511,22 @@ async function fetchSmsRelay(url: string): Promise<SmsRelayFetchResponse> {
     text,
     raw: detail,
   };
+}
+
+function resolveRedirectUrl(sourceUrl: URL, location: string): string {
+  const target = String(location || '').trim();
+  if (!target) {
+    return '';
+  }
+  try {
+    const redirectUrl = new URL(target, sourceUrl);
+    if (redirectUrl.protocol !== 'http:' && redirectUrl.protocol !== 'https:') {
+      return '';
+    }
+    return redirectUrl.toString();
+  } catch {
+    return '';
+  }
 }
 
 async function readSmsRelayResponse(response: Response): Promise<{ parsed: unknown; text: string }> {

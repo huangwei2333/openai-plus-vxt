@@ -1,14 +1,33 @@
-import { loadRegisterState } from '../../app/state';
-import { parseAccountInput } from '../register/account-input';
+import { loadRegisterState, loadSmsRelayState } from '../../app/state';
+import { setInputValueWithFallback } from '../register/dom-input';
+import { resolveRegisterEmailForFill } from '../register/email-alias';
+import { waitForDocumentLoadComplete } from '../../app/page-ready.js';
 import { loadAddressAutofillSettings, saveAddressAutofillSettings } from '../settings/state';
 import type { AddressAutofillSettings } from '../settings/types';
+import { getSelectedSmsRelayTarget } from '../sms/target-list';
+import { hasCompleteCreditCardInfo } from './address-source';
+import {
+  detectPaypalSecurityChallenge,
+  observePaypalChallengeArtifacts,
+  PAYPAL_SECURITY_CHALLENGE_CODE,
+  PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+  removePaypalChallengeArtifacts,
+} from './paypal-security-challenge';
+import {
+  detectPaypalHostedStage,
+  evaluatePaypalSignupReadiness,
+  isPaypalHostedSubmitButtonMetadata,
+  normalizePaypalSignupPhone,
+  normalizePaypalVerificationCode,
+} from './paypal-form-utils';
+import type { PaypalHostedStage, PaypalSignupFieldStatus, PaypalSignupReadiness } from './paypal-form-utils';
+import { createPaypalSignupPassword } from './paypal-password';
 import type { AddressProfile, RandomAddressResponse } from './types';
 
 const LOG_PREFIX = '[OPX PayPal Autofill]';
 const PAYPAL_ADDRESS_SESSION_KEY = 'opx.paypal.autofill.address';
 const PAYPAL_PENDING_MANUAL_KEY = 'opx.paypal.autofill.pendingManual';
 const PAYPAL_FILLED_ATTR = 'data-opx-paypal-filled';
-const PAYPAL_RANDOM_BUTTON_ID = 'opx-paypal-random-fill';
 const MAX_AUTOFILL_ATTEMPTS_PER_PAGE = 3;
 const PAYPAL_COUNTRY_LABELS: Record<string, string> = {
   AR: 'Argentina',
@@ -40,17 +59,21 @@ let running = false;
 let scheduledTimer: number | null = null;
 let pageAddress: AddressProfile | null = null;
 let observer: MutationObserver | null = null;
+let challengeArtifactObserver: MutationObserver | null = null;
 let attemptKey = '';
 let attemptCount = 0;
 let manualFillKey = '';
 
 export function initPaypalAutofill(): void {
-  if (initialized || !isPaypalSignupPage()) {
+  if (initialized || !location.hostname.endsWith('paypal.com')) {
     return;
   }
 
   initialized = true;
-  installRandomFillButton();
+  installPaypalChallengeArtifactObserver();
+  if (!isPaypalSignupPage()) {
+    return;
+  }
   installStorageListener();
   installObserver();
   if (consumePendingManualFill()) {
@@ -64,15 +87,42 @@ export async function fillPaypalAddressNow(
   address?: AddressProfile,
   force = false,
   allowRetry = true,
-): Promise<{ ok: boolean; filled: number; message: string; countryChanged: boolean }> {
+  options: { submitCreateAccount?: boolean } = {},
+): Promise<{ ok: boolean; filled: number; message: string; countryChanged: boolean; code?: string; submitted?: boolean }> {
   if (!isPaypalSignupPage()) {
     return { ok: false, filled: 0, message: '当前不是 PayPal 注册支付页', countryChanged: false };
   }
 
+  const loaded = await waitForDocumentLoadComplete(15_000);
+  if (!loaded) {
+    return { ok: false, filled: 0, message: '页面仍在加载中，已停止自动填写 PayPal，请稍后重试', countryChanged: false };
+  }
+
+  if (detectPaypalSecurityChallenge(document)) {
+    return {
+      ok: false,
+      filled: 0,
+      message: PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+      countryChanged: false,
+      code: PAYPAL_SECURITY_CHALLENGE_CODE,
+    };
+  }
+
   const settings = await loadAddressAutofillSettings();
-  const targetAddress = address || await getPageAddress(settings);
+  const usSettings = { ...settings, countryCode: 'US', city: '' };
+  const targetAddress = address?.countryCode === 'US'
+    ? address
+    : await getPageAddress(usSettings);
   if (!targetAddress) {
     return { ok: false, filled: 0, message: '没有可用地址资料', countryChanged: false };
+  }
+  if (!hasCompleteCreditCardInfo(targetAddress.creditCard)) {
+    return {
+      ok: false,
+      filled: 0,
+      message: 'PayPal 注册资料缺少完整信用卡号、CVV 或有效期，已停止填写',
+      countryChanged: false,
+    };
   }
 
   rememberSessionAddress(targetAddress);
@@ -83,7 +133,16 @@ export async function fillPaypalAddressNow(
     resetFilledMarks();
     resetAttempts();
   }
-  const result = await fillPaypalSignupFields(targetAddress, allowRetry);
+  const result = await fillPaypalSignupFields(targetAddress, allowRetry, options.submitCreateAccount !== false);
+  if (result.challenge) {
+    return {
+      ok: false,
+      filled: result.filled,
+      message: PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+      countryChanged: result.countryChanged,
+      code: PAYPAL_SECURITY_CHALLENGE_CODE,
+    };
+  }
   noteAttempt(targetAddress, result.countryChanged, allowRetry);
   if (force && !allowRetry) {
     manualFillKey = pageAttemptKey(targetAddress);
@@ -94,16 +153,251 @@ export async function fillPaypalAddressNow(
       clearPendingManualFill();
     }
   }
+  const signupReadiness = getPaypalSignupReadiness();
+  const shouldOnlyFillSignupForm = options.submitCreateAccount === false;
+  const readyToCreateAccount = shouldOnlyFillSignupForm && signupReadiness.ready;
   return {
-    ok: result.filled > 0 || result.countryChanged,
+    ok: shouldOnlyFillSignupForm
+      ? readyToCreateAccount
+      : result.filled > 0 || result.countryChanged || Boolean(result.submitted),
     filled: result.filled,
     countryChanged: result.countryChanged,
+    submitted: result.submitted,
     message: result.countryChanged
       ? `已选择 PayPal 国家：${targetAddress.countryCode}，等待页面重新加载`
+      : result.submitted
+        ? `已填写 PayPal ${Math.max(0, result.filled - 1)} 项并点击创建账号`
+      : readyToCreateAccount
+        ? 'PayPal 注册信息已填写，创建账号按钮已就绪'
+      : shouldOnlyFillSignupForm && signupReadiness.missing.length > 0
+        ? `PayPal 注册信息尚未填完，等待字段：${signupReadiness.missing.join('、')}`
       : result.filled > 0
         ? `已填写 PayPal ${result.filled} 项`
         : '未找到可填写的 PayPal 字段',
   };
+}
+
+export async function preparePaypalRegistrationNow(): Promise<{ ok: boolean; message: string; countryChanged: boolean; code?: string }> {
+  if (!isPaypalRegistrationEntryPage()) {
+    return { ok: false, message: '当前不是 PayPal 注册入口页', countryChanged: false };
+  }
+
+  const loaded = await waitForDocumentLoadComplete(15_000);
+  if (!loaded) {
+    return { ok: false, message: '页面仍在加载中，已停止自动填写 PayPal 邮箱，请稍后重试', countryChanged: false };
+  }
+
+  if (detectPaypalSecurityChallenge(document)) {
+    return {
+      ok: false,
+      countryChanged: false,
+      code: PAYPAL_SECURITY_CHALLENGE_CODE,
+      message: PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+    };
+  }
+
+  const countryChanged = ensurePaypalCountryInUrl('US') || selectCountryCode('US');
+  if (countryChanged) {
+    return {
+      ok: true,
+      countryChanged,
+      message: '已切换 PayPal 国家为美国，等待页面重新加载',
+    };
+  }
+
+  const email = await resolvePaypalRegistrationEmail();
+  const emailFilled = await fillPaypalRegistrationEmail(email);
+  const submitted = await clickPaypalEmailNextButton();
+  return {
+    ok: true,
+    countryChanged: false,
+    message: submitted
+      ? `已填写 PayPal 邮箱${emailFilled ? '' : '（字段已存在）'}并点击 Next`
+      : `已填写 PayPal 邮箱${emailFilled ? '' : '（字段已存在）'}，等待 Next 按钮可用`,
+  };
+}
+
+export function isPaypalSignupFormPage(): boolean {
+  return location.hostname.endsWith('paypal.com') && (
+    location.pathname.startsWith('/checkoutweb/signup') ||
+    Boolean(document.getElementById('cardNumber')) ||
+    Boolean(document.getElementById('billingLine1')) ||
+    Boolean(findTextControl(PAYPAL_FIELDS.cardNumber) && findTextControl(PAYPAL_FIELDS.address1))
+  );
+}
+
+export function inspectPaypalSignupPage(): { ok: true; ready: boolean; challenge: boolean; message: string } {
+  const challenge = location.hostname.endsWith('paypal.com') && detectPaypalSecurityChallenge(document);
+  if (challenge) {
+    return {
+      ok: true,
+      ready: false,
+      challenge: true,
+      message: PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+    };
+  }
+
+  const ready = isPaypalSignupFormPage();
+  return {
+    ok: true,
+    ready,
+    challenge: false,
+    message: ready ? '已进入 PayPal 地址和信用卡页面' : '尚未进入 PayPal 地址和信用卡页面',
+  };
+}
+
+export function inspectPaypalHostedStageNow(): {
+  ok: true;
+  stage: PaypalHostedStage;
+  challenge: boolean;
+  ready: boolean;
+  message: string;
+} {
+  const challenge = location.hostname.endsWith('paypal.com') && detectPaypalSecurityChallenge(document);
+  const stage = getPaypalHostedStage();
+  return {
+    ok: true,
+    stage,
+    challenge,
+    ready: stage !== 'outside_paypal' && stage !== 'unknown',
+    message: challenge ? PAYPAL_SECURITY_CHALLENGE_MESSAGE : paypalHostedStageMessage(stage),
+  };
+}
+
+export async function clickPaypalCreateAccountNow(): Promise<{ ok: boolean; message: string; code?: string }> {
+  if (!location.hostname.endsWith('paypal.com')) {
+    return { ok: false, message: '当前页面不是 PayPal 注册页' };
+  }
+  if (detectPaypalSecurityChallenge(document)) {
+    return {
+      ok: false,
+      code: PAYPAL_SECURITY_CHALLENGE_CODE,
+      message: PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+    };
+  }
+  const stage = getPaypalHostedStage();
+  if (stage === 'verification') {
+    return { ok: true, message: 'PayPal 已进入验证码页，无需再次点击创建账号' };
+  }
+  if (stage === 'review' || stage === 'approval' || stage === 'outside_paypal') {
+    return { ok: true, message: 'PayPal 已离开注册表单页，继续后续确认步骤' };
+  }
+  if (stage === 'login') {
+    return preparePaypalRegistrationNow();
+  }
+  const signupReadiness = getPaypalSignupReadiness();
+  if (!signupReadiness.ready) {
+    return {
+      ok: false,
+      message: `PayPal 注册信息尚未填完，暂不点击创建账号。等待字段：${signupReadiness.missing.join('、')}`,
+    };
+  }
+  const clicked = await clickPaypalCreateAccountButton(12_000);
+  if (!clicked) {
+    return { ok: false, message: '未找到可点击的 PayPal 创建账号按钮' };
+  }
+  await delay(900);
+  if (detectPaypalSecurityChallenge(document)) {
+    return {
+      ok: false,
+      code: PAYPAL_SECURITY_CHALLENGE_CODE,
+      message: PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+    };
+  }
+  return { ok: true, message: '已点击 PayPal 创建账号按钮' };
+}
+
+export async function fillPaypalVerificationCodeNow(code: string): Promise<{ ok: boolean; message: string; code?: string }> {
+  if (!location.hostname.endsWith('paypal.com')) {
+    return { ok: false, message: '当前页面不是 PayPal 验证码页' };
+  }
+  removePaypalChallengeArtifacts(document);
+  if (detectPaypalSecurityChallenge(document)) {
+    return {
+      ok: false,
+      code: PAYPAL_SECURITY_CHALLENGE_CODE,
+      message: PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+    };
+  }
+
+
+  const normalized = normalizePaypalVerificationCode(code);
+  if (!normalized) {
+    return { ok: false, message: 'PayPal 验证码必须是 6 位数字' };
+  }
+
+  const filled = fillPaypalVerificationCode(normalized);
+  if (!filled) {
+    const stage = getPaypalHostedStage();
+    if (stage === 'review' || stage === 'approval' || stage === 'outside_paypal') {
+      return { ok: true, message: 'PayPal 已离开验证码页，无需重复填入验证码' };
+    }
+    return { ok: false, message: '未找到 PayPal 验证码输入框' };
+  }
+
+  const clicked = await clickPaypalVerificationContinueButton(5_000);
+  return {
+    ok: true,
+    message: clicked ? '已填写 PayPal 验证码并点击继续' : '已填写 PayPal 验证码，等待继续按钮可用',
+  };
+}
+
+export function confirmPaypalVerificationResultNow(): { ok: boolean; message: string; code?: string } {
+  if (!location.hostname.endsWith('paypal.com')) {
+    return { ok: true, message: 'PayPal 已跳转离开，等待订阅结果同步' };
+  }
+  removePaypalChallengeArtifacts(document);
+  if (detectPaypalSecurityChallenge(document)) {
+    return {
+      ok: false,
+      code: PAYPAL_SECURITY_CHALLENGE_CODE,
+      message: PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+    };
+  }
+  const stage = getPaypalHostedStage();
+  if (stage === 'review' || stage === 'approval' || stage === 'outside_paypal') {
+    return { ok: true, message: paypalHostedStageMessage(stage) };
+  }
+  if (stage === 'login') {
+    return { ok: false, message: 'PayPal 仍在邮箱入口页，等待进入注册或验证码页面' };
+  }
+  if (findPaypalVerificationSplitInputs().length >= 6 || findPaypalVerificationSingleInput()) {
+    return { ok: false, message: 'PayPal 验证码提交后仍在验证码页，等待校验通过' };
+  }
+  if (isPaypalSignupFormPage()) {
+    return { ok: false, message: 'PayPal 仍停留在注册表单页，等待验证码校验结果' };
+  }
+  return { ok: true, message: 'PayPal 验证码已通过，进入后续确认页面' };
+}
+
+export async function completePaypalSubscriptionNow(): Promise<{ ok: boolean; message: string; code?: string }> {
+  if (!location.hostname.endsWith('paypal.com')) {
+    return { ok: true, message: 'PayPal 页面已离开，等待订阅结果同步' };
+  }
+  if (detectPaypalSecurityChallenge(document)) {
+    return {
+      ok: false,
+      code: PAYPAL_SECURITY_CHALLENGE_CODE,
+      message: PAYPAL_SECURITY_CHALLENGE_MESSAGE,
+    };
+  }
+
+  const stage = getPaypalHostedStage();
+  if (stage === 'verification') {
+    return { ok: false, message: 'PayPal 仍在验证码页，需要先完成验证码校验' };
+  }
+  if (stage === 'signup' || stage === 'login') {
+    return { ok: false, message: paypalHostedStageMessage(stage) };
+  }
+  if (stage === 'outside_paypal') {
+    return { ok: true, message: paypalHostedStageMessage(stage) };
+  }
+
+  const clicked = await clickPaypalCompletionButton(8_000);
+  if (!clicked) {
+    return { ok: false, message: '未找到 PayPal 完成订阅或同意继续按钮' };
+  }
+  return { ok: true, message: '已点击 PayPal 完成订阅按钮' };
 }
 
 async function runAutofill(): Promise<void> {
@@ -136,12 +430,12 @@ async function runAutofill(): Promise<void> {
 }
 
 async function getPageAddress(settings: AddressAutofillSettings): Promise<AddressProfile | null> {
-  if (pageAddress && addressMatchesSettings(pageAddress, settings)) {
+  if (pageAddress && addressMatchesSettings(pageAddress, settings) && hasCompleteCreditCardInfo(pageAddress.creditCard)) {
     return pageAddress;
   }
 
   const sessionAddress = loadSessionAddress();
-  if (sessionAddress && addressMatchesSettings(sessionAddress, settings)) {
+  if (sessionAddress && addressMatchesSettings(sessionAddress, settings) && hasCompleteCreditCardInfo(sessionAddress.creditCard)) {
     pageAddress = sessionAddress;
     return pageAddress;
   }
@@ -163,7 +457,11 @@ async function getPageAddress(settings: AddressAutofillSettings): Promise<Addres
   return pageAddress;
 }
 
-async function fillPaypalSignupFields(address: AddressProfile, allowRetry: boolean): Promise<{ filled: number; countryChanged: boolean }> {
+async function fillPaypalSignupFields(
+  address: AddressProfile,
+  allowRetry: boolean,
+  submitCreateAccount: boolean,
+): Promise<{ filled: number; countryChanged: boolean; challenge?: boolean; submitted?: boolean }> {
   let filled = 0;
   const countryChanged = selectCountry(address);
   if (countryChanged) {
@@ -174,13 +472,21 @@ async function fillPaypalSignupFields(address: AddressProfile, allowRetry: boole
   }
 
   const email = await resolveEmail(address);
+  const phone = normalizePaypalSignupPhone(await resolveSmsRelayPhone(address));
+  const password = resolvePassword(address);
   const name = splitName(address.fullName);
   const expiry = parseExpiry(address.creditCard.expires);
 
+  filled += fillHostedPaypalSignupFields(address, {
+    email,
+    phone,
+    password,
+    firstName: name.first,
+    lastName: name.last,
+    expiry: expiry.short,
+  });
   filled += fillText(PAYPAL_FIELDS.email, email, true);
-  filled += fillPasswordField(email);
-  renderPasswordEmailNote(email);
-  filled += fillText(PAYPAL_FIELDS.phone, address.phone, true);
+  filled += fillText(PAYPAL_FIELDS.phone, phone, true);
   filled += fillText(PAYPAL_FIELDS.cardNumber, address.creditCard.number, true);
   filled += fillText(PAYPAL_FIELDS.expiry, expiry.short, true);
   filled += fillText(PAYPAL_FIELDS.csc, address.creditCard.cvv, true);
@@ -195,36 +501,248 @@ async function fillPaypalSignupFields(address: AddressProfile, allowRetry: boole
   filled += fillBillingAddressGroup(address, name);
   filled += fillSelectOrInput(PAYPAL_FIELDS.expiryMonth, expiry.month, [expiry.month]);
   filled += fillSelectOrInput(PAYPAL_FIELDS.expiryYear, expiry.year4, [expiry.year4, expiry.year2]);
+  filled += fillPasswordField(password);
 
-  return { filled, countryChanged: false };
+  const signupReadiness = getPaypalSignupReadiness();
+  const submitted = submitCreateAccount && signupReadiness.ready
+    ? await clickPaypalCreateAccountButton()
+    : false;
+  if (submitted) {
+    filled += 1;
+    await delay(900);
+  }
+
+  return {
+    filled,
+    countryChanged: false,
+    submitted,
+    challenge: detectPaypalSecurityChallenge(document),
+  };
+}
+
+function fillHostedPaypalSignupFields(
+  address: AddressProfile,
+  values: {
+    email: string;
+    phone: string;
+    password: string;
+    firstName: string;
+    lastName: string;
+    expiry: string;
+  },
+): number {
+  let filled = 0;
+  filled += fillHostedInputById('email', values.email);
+  filled += fillHostedInputById('phone', values.phone);
+  filled += fillHostedInputById('cardNumber', address.creditCard.number.replace(/\s+/g, ''));
+  filled += fillHostedInputById('cardExpiry', values.expiry);
+  filled += fillHostedInputById('cardCvv', address.creditCard.cvv);
+  filled += fillHostedInputById('password', values.password);
+  filled += fillHostedInputById('firstName', values.firstName);
+  filled += fillHostedInputById('lastName', values.lastName);
+  filled += fillHostedInputById('billingLine1', address.line1);
+  filled += fillHostedInputById('billingLine2', address.line2);
+  filled += fillHostedInputById('billingCity', address.city);
+  filled += fillHostedInputById('billingPostalCode', address.postalCode);
+  filled += selectHostedOptionByIdText('billingState', address.state || address.stateFull) ? 1 : 0;
+  return filled;
+}
+
+function fillHostedInputById(id: string, value: string): number {
+  const input = document.getElementById(id);
+  if (!isTextControl(input) || !isVisible(input) || !value) {
+    return 0;
+  }
+  return fillTextControl(input, value, true);
+}
+
+function selectHostedOptionByIdText(id: string, text: string): boolean {
+  const select = document.getElementById(id);
+  const expectedText = normalizedText(text);
+  if (!(select instanceof HTMLSelectElement) || !isVisible(select) || !expectedText) {
+    return false;
+  }
+  const match = Array.from(select.options || []).find((option) => {
+    const label = normalizedText(option.textContent || option.label || '');
+    const value = normalizedText(option.value || '');
+    return label.includes(expectedText) || value.includes(expectedText);
+  });
+  if (!match || select.value === match.value) {
+    return false;
+  }
+  select.value = match.value;
+  emitChange(select);
+  return true;
+}
+
+function getPaypalSignupReadiness(): PaypalSignupReadiness {
+  const button = findPaypalCreateAccountButton();
+  return evaluatePaypalSignupReadiness(
+    getPaypalSignupFieldStatuses(),
+    Boolean(button && isVisible(button) && !isDisabledButton(button)),
+  );
+}
+
+function getPaypalSignupFieldStatuses(): PaypalSignupFieldStatus[] {
+  const statuses = paypalSignupFieldDefinitions().map((field) => {
+    const control = findPaypalSignupFieldControl(field);
+    return {
+      key: field.key,
+      label: field.label,
+      required: field.required,
+      present: Boolean(control),
+      filled: control ? isPaypalSignupFieldFilled(field.key, control) : false,
+    };
+  });
+
+  const hasSignupShell = location.pathname.startsWith('/checkoutweb/signup') ||
+    statuses.some((field) => field.present && field.required !== false);
+  if (!hasSignupShell) {
+    return statuses.filter((field) => field.present);
+  }
+
+  return statuses.map((field) => field.required === false
+    ? field
+    : { ...field, present: true });
+}
+
+function paypalSignupFieldDefinitions(): Array<{
+  key: string;
+  label: string;
+  required: boolean;
+  id?: string;
+  selectors?: string[];
+  kind: 'text' | 'select';
+}> {
+  return [
+    { key: 'email', label: '邮箱', required: true, id: 'email', selectors: PAYPAL_FIELDS.email, kind: 'text' },
+    { key: 'phone', label: '手机号', required: true, id: 'phone', selectors: PAYPAL_FIELDS.phone, kind: 'text' },
+    { key: 'cardNumber', label: '卡号', required: true, id: 'cardNumber', selectors: PAYPAL_FIELDS.cardNumber, kind: 'text' },
+    { key: 'cardExpiry', label: '有效期', required: true, id: 'cardExpiry', selectors: PAYPAL_FIELDS.expiry, kind: 'text' },
+    { key: 'cardCvv', label: '安全码', required: true, id: 'cardCvv', selectors: PAYPAL_FIELDS.csc, kind: 'text' },
+    { key: 'password', label: '密码', required: true, id: 'password', selectors: PAYPAL_FIELDS.password, kind: 'text' },
+    { key: 'firstName', label: '名', required: true, id: 'firstName', selectors: PAYPAL_FIELDS.firstName, kind: 'text' },
+    { key: 'lastName', label: '姓', required: true, id: 'lastName', selectors: PAYPAL_FIELDS.lastName, kind: 'text' },
+    { key: 'billingLine1', label: '地址', required: true, id: 'billingLine1', selectors: PAYPAL_FIELDS.address1, kind: 'text' },
+    { key: 'billingLine2', label: '地址补充', required: false, id: 'billingLine2', selectors: PAYPAL_FIELDS.address2, kind: 'text' },
+    { key: 'billingCity', label: '城市', required: true, id: 'billingCity', selectors: PAYPAL_FIELDS.city, kind: 'text' },
+    { key: 'billingPostalCode', label: '邮编', required: true, id: 'billingPostalCode', selectors: PAYPAL_FIELDS.postalCode, kind: 'text' },
+    { key: 'billingState', label: '州', required: true, id: 'billingState', selectors: PAYPAL_FIELDS.state, kind: 'select' },
+  ];
+}
+
+function findPaypalSignupFieldControl(field: {
+  id?: string;
+  selectors?: string[];
+  kind: 'text' | 'select';
+}): HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null {
+  const byId = field.id ? document.getElementById(field.id) : null;
+  if ((isTextControl(byId) || isSelectControl(byId)) && isVisible(byId)) {
+    return byId;
+  }
+
+  if (!field.selectors) {
+    return null;
+  }
+  const control = field.kind === 'select'
+    ? findSelect(field.selectors) || findTextControl(field.selectors)
+    : findTextControl(field.selectors);
+  return control && isVisible(control) ? control : null;
+}
+
+function isPaypalSignupFieldFilled(
+  key: string,
+  control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+): boolean {
+  const value = getControlValue(control);
+  const compact = comparableValue(value);
+  if (!compact) {
+    return false;
+  }
+  if (key === 'email') {
+    return isEmail(value);
+  }
+  if (key === 'phone') {
+    return normalizePaypalSignupPhone(value).length >= 10;
+  }
+  if (key === 'cardNumber') {
+    return compact.length >= 12;
+  }
+  if (key === 'cardExpiry') {
+    return /\d{1,2}\D*\d{2,4}/.test(value);
+  }
+  if (key === 'cardCvv') {
+    return compact.length >= 3;
+  }
+  return true;
+}
+
+function getControlValue(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string {
+  if (control instanceof HTMLSelectElement) {
+    const selected = control.selectedOptions[0];
+    return [
+      control.value,
+      selected?.textContent || selected?.label || '',
+    ].join(' ').trim();
+  }
+  return control.value.trim();
 }
 
 function selectCountry(address: AddressProfile): boolean {
+  return selectCountryCode(address.countryCode, [
+    address.countryCode,
+    PAYPAL_COUNTRY_LABELS[address.countryCode] || '',
+    address.countryLabel,
+  ]) || ensurePaypalCountryInUrl(address.countryCode);
+}
+
+function selectCountryCode(countryCode: string, labels?: string[]): boolean {
   const select = findSelect(PAYPAL_FIELDS.country);
   if (!select || !isVisible(select)) {
     return false;
   }
 
-  return setSelectOption(select, address.countryCode, [
-    address.countryCode,
-    PAYPAL_COUNTRY_LABELS[address.countryCode] || '',
-    address.countryLabel,
+  return setSelectOption(select, countryCode, labels || [
+    countryCode,
+    PAYPAL_COUNTRY_LABELS[countryCode] || '',
   ]);
 }
 
 async function resolveEmail(address: AddressProfile): Promise<string> {
+  return resolvePaypalRegistrationEmail(address);
+}
+
+async function resolveSmsRelayPhone(address: AddressProfile): Promise<string> {
+  const state = await loadSmsRelayState();
+  const selected = getSelectedSmsRelayTarget(state.targets, state.selectedTargetId);
+  return selected?.phone || address.phone;
+}
+
+async function resolvePaypalRegistrationEmail(address?: AddressProfile): Promise<string> {
   const register = await loadRegisterState();
-  const parsed = parseAccountInput(register.rawInput);
-  if (parsed.ok && isEmail(parsed.email)) {
-    return parsed.email;
+  const resolved = resolveRegisterEmailForFill(register);
+  if (resolved?.email && isEmail(resolved.email)) {
+    return resolved.email;
   }
-  if (isEmail(register.email)) {
-    return register.email;
-  }
-  if (isEmail(address.identity.temporaryMail)) {
+  if (address && isEmail(address.identity.temporaryMail)) {
     return address.identity.temporaryMail;
   }
-  return createOutlookEmail(address);
+  return address ? createOutlookEmail(address) : `paypal${Date.now().toString().slice(-8)}@outlook.com`;
+}
+
+async function fillPaypalRegistrationEmail(email: string): Promise<boolean> {
+  const input = findTextControl(PAYPAL_FIELDS.email);
+  if (!input || !isVisible(input)) {
+    return false;
+  }
+  if (input instanceof HTMLInputElement) {
+    const result = await setInputValueWithFallback(() => {
+      const nextInput = findTextControl(PAYPAL_FIELDS.email);
+      return nextInput instanceof HTMLInputElement && isVisible(nextInput) ? nextInput : null;
+    }, email);
+    return Boolean(result);
+  }
+  return fillTextControl(input, email, true) > 0;
 }
 
 function fillText(selectors: string[], value: string, overwrite: boolean): number {
@@ -279,38 +797,258 @@ function fillPasswordField(value: string): number {
   return 1;
 }
 
-function renderPasswordEmailNote(email: string): void {
-  const anchor = findPasswordDisclaimerAnchor();
-  if (!anchor) {
-    return;
+function resolvePassword(address: AddressProfile): string {
+  return createPaypalSignupPassword({
+    preferredPassword: address.identity.password,
+    username: address.identity.username,
+    fullName: address.fullName,
+    id: address.id,
+    fetchedAt: address.fetchedAt,
+  });
+}
+
+async function clickPaypalEmailNextButton(timeoutMs = 2500): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const button = findPaypalEmailNextButton();
+    if (button && isVisible(button) && !isDisabledButton(button)) {
+      clickElement(button);
+      return true;
+    }
+    await delay(120);
   }
+  return false;
+}
 
-  fillPasswordField(email);
+function findPaypalEmailNextButton(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('button[data-atomic-wait-intent="Submit_Email"]') ||
+    Array.from(document.querySelectorAll<HTMLElement>('button'))
+      .find((item) => isVisible(item) && normalizedText(item.textContent || item.getAttribute('aria-label')).includes('next')) ||
+    null;
+}
 
-  const noteId = 'opx-paypal-password-note';
-  const text = `当前密码和邮箱一致（${email}）`;
-  let note = document.getElementById(noteId);
-  if (!note) {
-    note = document.createElement('div');
-    note.id = noteId;
-    Object.assign(note.style, {
-      color: '#93e4bd',
-      fontSize: '12px',
-      lineHeight: '18px',
-      margin: '4px 0 10px',
-      padding: '6px 10px',
-      border: '1px solid rgba(47, 209, 124, 0.36)',
-      borderRadius: '6px',
-      background: 'rgba(15, 23, 42, 0.82)',
-      display: 'block',
+async function clickPaypalCreateAccountButton(timeoutMs = 2500): Promise<boolean> {
+  const startedAt = Date.now();
+  let clicked = false;
+  while (Date.now() - startedAt < timeoutMs) {
+    const button = findPaypalCreateAccountButton();
+    if (button && isVisible(button) && !isDisabledButton(button)) {
+      const buttonText = normalizedText(getActionText(button));
+      clickElement(button);
+      clicked = true;
+      await delay(1000);
+      if (findPaypalVerificationSplitInputs().length >= 6 || findPaypalVerificationSingleInput()) {
+        return true;
+      }
+      const currentText = normalizedText(getActionText(button));
+      if (currentText && currentText === buttonText && !currentText.includes('processing')) {
+        await delay(1000);
+        continue;
+      }
+      return true;
+    }
+    await delay(120);
+  }
+  return clicked;
+}
+
+function findPaypalCreateAccountButton(): HTMLElement | null {
+  const selectors = [
+    'button[data-testid="submit-button"]',
+    'button[data-testid="hosted-payment-submit-button"]',
+    'button[data-atomic-wait-intent="Submit_Email"]',
+    'button.SubmitButton--complete',
+    'button[data-testid*="create" i]',
+    'button[data-atomic-wait-intent*="create" i]',
+    'button[type="submit"]',
+  ];
+  for (const selector of selectors) {
+    const button = document.querySelector<HTMLElement>(selector);
+    if (button && isVisible(button) && (isPaypalHostedSubmitButton(button) || isCreateAccountButtonText(button))) {
+      return button;
+    }
+  }
+  return Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"]'))
+    .find((item) => isVisible(item) && (isPaypalHostedSubmitButton(item) || isCreateAccountButtonText(item))) ||
+    null;
+}
+
+function isPaypalHostedSubmitButton(element: HTMLElement): boolean {
+  return isPaypalHostedSubmitButtonMetadata({
+    text: element.textContent || element.getAttribute('value') || '',
+    dataTestId: element.getAttribute('data-testid') || '',
+    dataAtomicWaitIntent: element.getAttribute('data-atomic-wait-intent') || '',
+    className: typeof element.className === 'string' ? element.className : '',
+  });
+}
+
+function isCreateAccountButtonText(element: HTMLElement): boolean {
+  const text = normalizedText([
+    element.textContent,
+    element.getAttribute('aria-label'),
+    element.getAttribute('value'),
+    element.getAttribute('data-atomic-wait-intent'),
+    element.getAttribute('data-testid'),
+  ].join(' '));
+  return text.includes('create account') ||
+    text.includes('create paypal account') ||
+    text.includes('agree and create account') ||
+    text.includes('创建账号') ||
+    text.includes('建立帳戶');
+}
+
+function fillPaypalVerificationCode(code: string): boolean {
+  const splitInputs = findPaypalVerificationSplitInputs();
+  if (splitInputs.length >= Math.min(code.length, 6)) {
+    splitInputs.forEach((input, index) => {
+      setNativeValue(input, code[index] || '');
+      input.setAttribute(PAYPAL_FILLED_ATTR, '1');
     });
+    return true;
   }
-  const parent = anchor.parentElement;
-  if (!parent) {
-    return;
+
+  const input = findPaypalVerificationSingleInput();
+  if (!input) {
+    return false;
   }
-  parent.insertBefore(note, anchor);
-  note.textContent = text;
+  setNativeValue(input, code);
+  input.setAttribute(PAYPAL_FILLED_ATTR, '1');
+  return true;
+}
+
+function findPaypalVerificationSplitInputs(): HTMLInputElement[] {
+  const byHostedId = Array.from({ length: 8 }, (_, index) => document.getElementById(`ci-ciBasic-${index}`))
+    .filter((input): input is HTMLInputElement => input instanceof HTMLInputElement && isVisible(input) && !isDisabledInput(input));
+  if (byHostedId.length >= 4) {
+    return byHostedId;
+  }
+
+  const candidates = Array.from(document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"], input[autocomplete="one-time-code"], input[maxlength="1"]'))
+    .filter((input) =>
+      isVisible(input) &&
+      !isDisabledInput(input) &&
+      !isIgnoredInput(input) &&
+      !isLikelyCardField(input) &&
+      Number(input.maxLength || 1) <= 1,
+    );
+  return candidates.length >= 4 ? candidates : [];
+}
+
+function findPaypalVerificationSingleInput(): HTMLInputElement | null {
+  const selectors = [
+    'input[autocomplete="one-time-code"]',
+    'input[name*="verification" i]',
+    'input[id*="verification" i]',
+    'input[name*="otp" i]',
+    'input[id*="otp" i]',
+    'input[name*="code" i]',
+    'input[id*="code" i]',
+  ];
+  for (const selector of selectors) {
+    const input = document.querySelector<HTMLInputElement>(selector);
+    if (input && isVisible(input) && !isDisabledInput(input) && !isIgnoredInput(input) && !isLikelyCardField(input)) {
+      return input;
+    }
+  }
+
+  return Array.from(document.querySelectorAll<HTMLInputElement>('input'))
+    .find((input) =>
+      isVisible(input) &&
+      !isDisabledInput(input) &&
+      !isIgnoredInput(input) &&
+      !isLikelyCardField(input) &&
+      /verification|one-time|otp|confirmation|验证码|驗證碼/i.test([
+        input.id,
+        input.name,
+        input.placeholder,
+        input.autocomplete,
+        input.getAttribute('aria-label'),
+        labelledText(input),
+        closestLabelText(input),
+      ].join(' ')),
+    ) || null;
+}
+
+async function clickPaypalVerificationContinueButton(timeoutMs = 2500): Promise<boolean> {
+  return clickPaypalButtonByText([
+    /continue|next|submit|verify|confirm/i,
+    /继续|下一步|提交|验证|確認|繼續|驗證/,
+  ], timeoutMs);
+}
+
+async function clickPaypalCompletionButton(timeoutMs = 2500): Promise<boolean> {
+  const direct = findPaypalCompletionButton();
+  if (direct) {
+    clickElement(direct);
+    return true;
+  }
+
+  return clickPaypalButtonByText([
+    /agree\s*(?:and)?\s*continue|agree\s*(?:and)?\s*subscribe|complete|confirm|pay\s*now|subscribe|continue/i,
+    /同意并继续|同意並繼續|同意|完成|确认|確認|订阅|訂閱|继续|繼續/,
+  ], timeoutMs);
+}
+
+function findPaypalCompletionButton(): HTMLElement | null {
+  const direct = findPaypalReviewConsentButton();
+  if (direct) {
+    return direct;
+  }
+  return Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"], a'))
+    .find((item) =>
+      isVisible(item) &&
+      !isDisabledButton(item) &&
+      [
+        /agree\s*(?:and)?\s*continue|agree\s*(?:and)?\s*subscribe|complete|confirm|pay\s*now|subscribe|continue/i,
+        /同意并继续|同意並繼續|同意|完成|确认|確認|订阅|訂閱|继续|繼續/,
+      ].some((pattern) => pattern.test(getActionText(item))),
+    ) || null;
+}
+
+function findPaypalReviewConsentButton(): HTMLElement | null {
+  const direct = document.getElementById('consentButton') ||
+    document.querySelector<HTMLElement>('button[data-testid="consentButton"]');
+  return direct instanceof HTMLElement && isVisible(direct) && !isDisabledButton(direct) ? direct : null;
+}
+
+async function clickPaypalButtonByText(patterns: RegExp[], timeoutMs: number): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const button = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], input[type="submit"], a'))
+      .find((item) => isVisible(item) && !isDisabledButton(item) && patterns.some((pattern) => pattern.test(getActionText(item))));
+    if (button) {
+      clickElement(button);
+      return true;
+    }
+    await delay(120);
+  }
+  return false;
+}
+
+function getActionText(element: HTMLElement): string {
+  return [
+    element.textContent,
+    element.getAttribute('aria-label'),
+    element.getAttribute('value'),
+    element.getAttribute('data-testid'),
+    element.getAttribute('data-atomic-wait-intent'),
+  ].join(' ');
+}
+
+function isLikelyCardField(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): boolean {
+  return /card|cc|csc|cvv|cvc|expiry|expire|security/i.test([
+    input.id,
+    input.name,
+    'placeholder' in input ? input.placeholder : '',
+    input.getAttribute('aria-label'),
+    labelledText(input as HTMLElement),
+  ].join(' '));
+}
+
+function isDisabledInput(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): boolean {
+  return Boolean(input.disabled) ||
+    input.getAttribute('aria-disabled') === 'true' ||
+    ('readOnly' in input && input.readOnly);
 }
 
 function fillSelectOrInput(selectors: string[], preferredValue: string, preferredLabels: string[]): number {
@@ -636,10 +1374,40 @@ function emitChange(element: HTMLElement): void {
   element.dispatchEvent(new Event('blur', { bubbles: true }));
 }
 
+function clickElement(element: HTMLElement): void {
+  element.scrollIntoView({ block: 'center', inline: 'center' });
+  const rect = element.getBoundingClientRect();
+  const clientX = rect.left + rect.width / 2;
+  const clientY = rect.top + rect.height / 2;
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+    const EventCtor = type.startsWith('pointer') ? PointerEvent : MouseEvent;
+    element.dispatchEvent(new EventCtor(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+      buttons: type.endsWith('down') ? 1 : 0,
+      pointerId: 1,
+      pointerType: 'mouse',
+    }));
+  }
+  element.click();
+}
+
+function isDisabledButton(element: HTMLElement): boolean {
+  const button = element as HTMLButtonElement;
+  return Boolean(button.disabled) ||
+    element.hasAttribute('disabled') ||
+    element.getAttribute('aria-disabled') === 'true' ||
+    normalizedText(element.className).includes('disabled');
+}
+
 function installObserver(): void {
   observer?.disconnect();
   observer = new MutationObserver(() => {
-    installRandomFillButton();
     if (manualFillKey && attemptKey === manualFillKey) {
       return;
     }
@@ -653,237 +1421,9 @@ function installObserver(): void {
   });
 }
 
-function installRandomFillButton(): void {
-  if (!isPaypalSignupPage() || document.getElementById(PAYPAL_RANDOM_BUTTON_ID)) {
-    return;
-  }
-
-  const cardBrandAnchor = findPayPalHintAnchor();
-  const cardFieldAnchor = findCardFieldAnchor();
-  const widget = createRandomFillWidget();
-  if (cardBrandAnchor?.parentElement) {
-    widget.style.marginTop = '8px';
-    widget.style.marginBottom = '12px';
-    cardBrandAnchor.parentElement.insertBefore(widget, cardBrandAnchor.nextSibling);
-    return;
-  }
-  if (cardFieldAnchor?.parentElement) {
-    cardFieldAnchor.parentElement.insertBefore(widget, cardFieldAnchor);
-  }
-}
-
-function createRandomFillWidget(): HTMLElement {
-  const wrapper = document.createElement('div');
-  wrapper.id = PAYPAL_RANDOM_BUTTON_ID;
-  wrapper.setAttribute('data-opx-paypal-random-fill', '1');
-  Object.assign(wrapper.style, {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: '8px',
-    margin: '10px 0 14px',
-    minHeight: '32px',
-  });
-
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.textContent = '随机输入';
-  Object.assign(button.style, {
-    appearance: 'none',
-    border: '0',
-    borderRadius: '6px',
-    background: '#10b981',
-    color: '#ffffff',
-    cursor: 'pointer',
-    fontSize: '13px',
-    fontWeight: '700',
-    lineHeight: '1',
-    minHeight: '32px',
-    padding: '0 14px',
-    whiteSpace: 'nowrap',
-  });
-
-  const status = document.createElement('span');
-  Object.assign(status.style, {
-    color: '#64748b',
-    fontSize: '12px',
-    lineHeight: '16px',
-    minWidth: '0',
-  });
-
-  button.addEventListener('click', () => {
-    void fetchFreshAddressAndFill(button, status);
-  });
-  wrapper.append(button, status);
-  return wrapper;
-}
-
-async function fetchFreshAddressAndFill(button: HTMLButtonElement, status: HTMLElement): Promise<void> {
-  button.disabled = true;
-  button.textContent = '获取中...';
-  Object.assign(button.style, {
-    cursor: 'wait',
-    opacity: '0.72',
-  });
-  status.textContent = '正在获取新资料';
-
-  try {
-    const settings = await loadAddressAutofillSettings();
-    const response = await browser.runtime.sendMessage({
-      type: 'opx:fetch-random-address',
-      countryCode: settings.countryCode,
-      city: settings.city,
-    });
-
-    if (!isRandomAddressResponse(response) || !response.ok || !response.address) {
-      status.textContent = response?.message || '获取失败';
-      return;
-    }
-
-    pageAddress = response.address;
-    rememberSessionAddress(response.address);
-    await saveAddressAutofillSettings({ lastAddress: response.address });
-    const result = await fillPaypalAddressNow(response.address, true, false);
-    status.textContent = result.countryChanged
-      ? '已切换国家，刷新后继续填写'
-      : result.ok
-        ? `已随机输入 ${result.filled} 项`
-        : result.message;
-  } catch (error) {
-    status.textContent = `失败：${errorMessage(error)}`;
-  } finally {
-    button.disabled = false;
-    button.textContent = '随机输入';
-    Object.assign(button.style, {
-      cursor: 'pointer',
-      opacity: '1',
-    });
-  }
-}
-
-function findCardBrandAnchor(): Element | null {
-  const exact = document.querySelector('div.css-ltr-cssveg > form > section.css-ltr-1hukb6e:nth-of-type(2) > div.css-ltr-cqmk4p:nth-of-type(1)');
-  if (exact && isVisible(exact)) {
-    return exact;
-  }
-
-  const candidates = Array.from(document.querySelectorAll('form section div, form div'))
-    .map((element) => ({
-      element,
-      score: scoreCardBrandAnchor(element),
-    }))
-    .filter((item) => item.score > 0 && isVisible(item.element))
-    .sort((a, b) => b.score - a.score);
-  return candidates[0]?.element || null;
-}
-
-function scoreCardBrandAnchor(element: Element): number {
-  const text = cardBrandText(element);
-  if (!text || text.length > 260) {
-    return 0;
-  }
-
-  const brandCount = ['mastercard', 'discover', 'visa', 'american express', 'diners']
-    .filter((brand) => text.includes(brand))
-    .length;
-  if (brandCount < 2) {
-    return 0;
-  }
-
-  const cardInput = findTextControl(PAYPAL_FIELDS.cardNumber);
-  const isBeforeCardInput = cardInput
-    ? Boolean(element.compareDocumentPosition(cardInput) & Node.DOCUMENT_POSITION_FOLLOWING)
-    : true;
-  return brandCount * 10 + (isBeforeCardInput ? 5 : 0);
-}
-
-function cardBrandText(element: Element): string {
-  const imageText = Array.from(element.querySelectorAll('img'))
-    .map((image) => [image.alt, image.title, image.getAttribute('aria-label')].join(' '))
-    .join(' ');
-  const svgText = Array.from(element.querySelectorAll('svg title'))
-    .map((title) => title.textContent || '')
-    .join(' ');
-  return normalizedText([element.textContent, imageText, svgText].join(' '));
-}
-
-function findCardFieldAnchor(): Element | null {
-  const cardInput = findTextControl(PAYPAL_FIELDS.cardNumber);
-  return cardInput?.closest('div, label, section') || cardInput;
-}
-
-function findPayPalHintAnchor(): Element | null {
-  const exact = document.querySelector('div.css-ltr-cssveg > form > section.css-ltr-4jicje:nth-of-type(1) > p.css-ltr-6pd54h.css-ltr-16jt5za-text_body');
-  if (exact && isVisible(exact)) {
-    return exact;
-  }
-
-  const candidates = Array.from(document.querySelectorAll('form section p, form p'))
-    .filter((element) => isVisible(element))
-    .map((element) => ({
-      element,
-      score: scoreHintAnchor(element),
-    }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score);
-  return candidates[0]?.element || null;
-}
-
-function findPasswordDisclaimerAnchor(): Element | null {
-  const exact = document.querySelector('section.css-ltr-h5yxuz:nth-of-type(3) > div.css-ltr-h5yxuz:nth-of-type(2) > div.css-ltr-1lvkl1r:nth-of-type(2) > p.css-ltr-abbmt5:nth-of-type(1)');
-  if (exact && isVisible(exact)) {
-    return exact;
-  }
-
-  const passwordInput = document.querySelector<HTMLInputElement>('input#password') ||
-    findTextControl(PAYPAL_FIELDS.password);
-  const passwordSection = passwordInput?.closest('section');
-  const scope = passwordSection || document;
-  const candidates = Array.from(scope.querySelectorAll('p'))
-    .filter((element) => isVisible(element))
-    .map((element) => ({
-      element,
-      score: scorePasswordDisclaimerAnchor(element, passwordInput),
-    }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score);
-  return candidates[0]?.element || null;
-}
-
-function scorePasswordDisclaimerAnchor(element: Element, passwordInput?: HTMLInputElement | HTMLTextAreaElement | null): number {
-  const text = normalizedText(element.textContent || '');
-  if (!text) {
-    return 0;
-  }
-  const keywords = [
-    'by creating an account',
-    'confirm you’re at least 18 years old',
-    "confirm you're at least 18 years old",
-    'agree to the',
-    'privacy statement',
-  ];
-  const hasDisclaimerText = keywords.some((keyword) => text.includes(normalizedText(keyword)));
-  if (!hasDisclaimerText) {
-    return 0;
-  }
-  const afterPassword = passwordInput
-    ? Boolean(passwordInput.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING)
-    : false;
-  return afterPassword ? 20 : 10;
-}
-
-function scoreHintAnchor(element: Element): number {
-  const text = normalizedText(element.textContent || '');
-  if (!text) {
-    return 0;
-  }
-  const keywords = [
-    'we don’t share your financial details with the merchant',
-    "we don't share your financial details with the merchant",
-    'financial details',
-    'merchant',
-  ];
-  return keywords.some((keyword) => text.includes(normalizedText(keyword))) ? 10 : 0;
+function installPaypalChallengeArtifactObserver(): void {
+  challengeArtifactObserver?.disconnect();
+  challengeArtifactObserver = observePaypalChallengeArtifacts(document);
 }
 
 function installStorageListener(): void {
@@ -1013,7 +1553,65 @@ function createOutlookEmail(address: AddressProfile): string {
 }
 
 function isPaypalSignupPage(): boolean {
-  return location.hostname.endsWith('paypal.com') && location.pathname.startsWith('/checkoutweb/signup');
+  return isPaypalRegistrationEntryPage();
+}
+
+function isPaypalRegistrationEntryPage(): boolean {
+  return location.hostname.endsWith('paypal.com') && (
+    location.pathname.startsWith('/checkoutweb/signup') ||
+    location.pathname === '/pay' ||
+    location.pathname === '/pay/'
+  );
+}
+
+function getPaypalHostedStage(): PaypalHostedStage {
+  return detectPaypalHostedStage({
+    isPaypalHost: location.hostname.endsWith('paypal.com'),
+    pathname: location.pathname,
+    hasVerificationInputs: findPaypalVerificationSplitInputs().length >= 6 || Boolean(findPaypalVerificationSingleInput()),
+    hasSignupFields: isPaypalSignupFormPage(),
+    hasReviewConsent: Boolean(findPaypalReviewConsentButton()),
+    hasApprovalButton: Boolean(findPaypalCompletionButton()),
+    hasEmailInput: Boolean(findTextControl(PAYPAL_FIELDS.email)),
+  });
+}
+
+function paypalHostedStageMessage(stage: PaypalHostedStage): string {
+  if (stage === 'login') {
+    return 'PayPal 当前在邮箱入口页';
+  }
+  if (stage === 'signup') {
+    return 'PayPal 当前在注册表单页';
+  }
+  if (stage === 'verification') {
+    return 'PayPal 当前在验证码页';
+  }
+  if (stage === 'review') {
+    return 'PayPal 当前在账单确认页';
+  }
+  if (stage === 'approval') {
+    return 'PayPal 当前在授权确认页';
+  }
+  if (stage === 'outside_paypal') {
+    return 'PayPal 已跳转离开，等待订阅结果同步';
+  }
+  return 'PayPal 当前页面阶段暂未识别';
+}
+
+function ensurePaypalCountryInUrl(countryCode: string): boolean {
+  const normalizedCountry = String(countryCode || '').trim().toUpperCase();
+  if (normalizedCountry !== 'US' || !location.hostname.endsWith('paypal.com')) {
+    return false;
+  }
+
+  const url = new URL(location.href);
+  if (url.searchParams.get('country.x') === normalizedCountry) {
+    return false;
+  }
+
+  url.searchParams.set('country.x', normalizedCountry);
+  location.assign(url.toString());
+  return true;
 }
 
 function isIgnoredInput(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): boolean {
@@ -1077,6 +1675,10 @@ function normalizedText(value: unknown): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function isRandomAddressResponse(value: unknown): value is RandomAddressResponse {

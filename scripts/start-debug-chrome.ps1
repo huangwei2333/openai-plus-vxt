@@ -13,5 +13,5 @@ Start-Process -FilePath $chrome -ArgumentList @(
   "--remote-debugging-port=9222",
   "--user-data-dir=$profile",
   "--load-extension=$extension",
-  "https://chatgpt.com/auth/login"
+  "https://chatgpt.com/"
 )

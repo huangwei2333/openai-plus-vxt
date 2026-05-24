@@ -1,0 +1,104 @@
+{
+  "mode": "pattern",
+  "sync": false,
+  "autoBackup": false,
+  "passthrough": "",
+  "theme": "",
+  "container": {},
+  "commands": {},
+  "data": [
+    {
+      "active": true,
+      "title": "JP_Register_7898",
+      "type": "http",
+      "hostname": "localhost",
+      "port": "7898",
+      "username": "",
+      "password": "",
+      "cc": "",
+      "city": "",
+      "color": "#8BC34A",
+      "proxyDNS": false,
+      "include": [
+        {
+          "type": "wildcard",
+          "title": "chatgpt_checkout",
+          "pattern": "*://chatgpt.com/backend-api/payments/checkout*",
+          "active": true
+        }
+      ],
+      "exclude": [],
+      "tabProxy": []
+    },
+    {
+      "active": true,
+      "title": "US_Pay_7899",
+      "type": "http",
+      "hostname": "localhost",
+      "port": "7899",
+      "username": "",
+      "password": "",
+      "cc": "",
+      "city": "",
+      "color": "#03A9F4",
+      "proxyDNS": false,
+      "include": [
+        {
+          "type": "wildcard",
+          "title": "paypal_root",
+          "pattern": "*://www.paypal.com/*",
+          "active": true
+        },
+        {
+          "type": "wildcard",
+          "title": "paypal_subdomains",
+          "pattern": "*://*.paypal.com/*",
+          "active": true
+        },
+        {
+          "type": "wildcard",
+          "title": "recaptcha",
+          "pattern": "*://*.recaptcha.net/*",
+          "active": true
+        },
+        {
+          "type": "wildcard",
+          "title": "stripe_checkout",
+          "pattern": "*://checkout.stripe.com/*",
+          "active": true
+        },
+        {
+          "type": "wildcard",
+          "title": "midtrans",
+          "pattern": "*://*.midtrans.com/*",
+          "active": true
+        }
+      ],
+      "exclude": [],
+      "tabProxy": []
+    },
+    {
+      "active": true,
+      "title": "Clash_Default_7897",
+      "type": "http",
+      "hostname": "localhost",
+      "port": "7897",
+      "username": "",
+      "password": "",
+      "cc": "",
+      "city": "",
+      "color": "#9E9E9E",
+      "proxyDNS": false,
+      "include": [
+        {
+          "type": "wildcard",
+          "title": "catch_all",
+          "pattern": "*",
+          "active": true
+        }
+      ],
+      "exclude": [],
+      "tabProxy": []
+    }
+  ]
+}

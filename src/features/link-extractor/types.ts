@@ -51,6 +51,11 @@ export interface ChatGptSessionInfo {
   email: string;
   planType: string;
   accessToken: string;
+  idToken?: string;
+  refreshToken?: string;
+  accountId?: string;
+  planExpiresAt?: string;
+  sessionExpiredAt?: string;
   fetchedAt: number;
 }
 
@@ -58,4 +63,5 @@ export interface ChatGptSessionResponse {
   ok: boolean;
   message: string;
   session?: ChatGptSessionInfo;
+  raw?: unknown;
 }

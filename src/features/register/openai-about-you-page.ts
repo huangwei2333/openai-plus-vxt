@@ -1,5 +1,7 @@
 import type { ActionResult } from './types';
 
+import { waitForDocumentLoadComplete } from '../../app/page-ready.js';
+
 const NAME_SELECTORS = [
   'input[name="name"]',
   'input[name="fullName"]',
@@ -40,6 +42,11 @@ export function isAboutYouPage(): boolean {
 }
 
 export async function fillAboutYouAndCreate(): Promise<ActionResult> {
+  const loaded = await waitForDocumentLoadComplete(15_000);
+  if (!loaded) {
+    return fail('页面仍在加载中，已停止自动填写资料，请稍后重试');
+  }
+
   const nameInput = findNameInput();
   const ageInput = findAgeInput(nameInput);
 
@@ -51,7 +58,7 @@ export async function fillAboutYouAndCreate(): Promise<ActionResult> {
   }
 
   const name = randomName();
-  const age = String(randomInt(25, 55));
+  const age = String(randomProfileAge());
 
   setNativeValue(nameInput, name);
   nameInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -203,6 +210,10 @@ function waitForEnabled(button: HTMLButtonElement, timeoutMs: number): Promise<v
 
 function randomName(): string {
   return FIRST_NAMES[randomInt(0, FIRST_NAMES.length - 1)];
+}
+
+export function randomProfileAge(): number {
+  return randomInt(20, 30);
 }
 
 function randomInt(min: number, max: number): number {

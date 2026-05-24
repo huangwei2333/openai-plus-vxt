@@ -1,17 +1,20 @@
 import { loadSmsRelayState, saveSmsRelayState } from '../../app/state';
 import type { FeaturePanelHandle } from '../../app/types';
-import { parseSmsRelayTargets } from './parser';
-import { fetchSmsRelayCode } from './poller';
-import type { SmsCodeRecord, SmsRelayState, SmsRelayTarget } from './types';
-
-const POLL_INTERVAL_MS = 3_000;
+import { ensureSmsRelayHostPermissions, fetchSmsRelayCode } from './poller';
+import {
+  addSmsRelayTargetsToList,
+  getCompatibleSmsRelayTargetIds,
+  getSelectedSmsRelayTarget,
+  normalizeSelectedSmsRelayTargetId,
+} from './target-list';
+import { formatSmsRelayRegion } from './phone-region.js';
+import type { SmsRelayState, SmsRelayTarget } from './types';
 
 interface TargetRuntime {
   target: SmsRelayTarget;
   status: 'waiting' | 'found' | 'error';
   message: string;
   code: string;
-  lastCheckedAt: number;
   inFlight: boolean;
 }
 
@@ -21,49 +24,34 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
 
   const input = document.createElement('textarea');
   input.className = 'opx-textarea opx-sms-input';
-  input.placeholder = '+14642649811----https://xxxx.com/xxx\n每行一个号码和 API 链接';
+  input.rows = 2;
+  input.placeholder = '+14642649811----https://xxxx.com/xxx';
   input.autocomplete = 'off';
   input.spellcheck = false;
 
-  const buttonRow = document.createElement('div');
-  buttonRow.className = 'opx-button-row opx-sms-actions';
-  const saveButton = createButton('保存并开始');
-  const pollNowButton = createButton('立即获取', 'opx-button opx-button-secondary');
-  const clearHistoryButton = createButton('清空历史', 'opx-button opx-button-secondary');
-  buttonRow.append(saveButton, pollNowButton, clearHistoryButton);
+  const addButton = createButton('添加', 'opx-button opx-button-secondary');
+  const inputRow = document.createElement('div');
+  inputRow.className = 'opx-sms-input-row';
+  inputRow.append(input, addButton);
 
-  const targetTitle = createTitle('当前号码');
   const targetList = document.createElement('div');
   targetList.className = 'opx-sms-targets';
 
-  const historyTitle = createTitle('验证码历史');
-  const historyTable = document.createElement('div');
-  historyTable.className = 'opx-sms-table';
-
   const status = document.createElement('div');
   status.className = 'opx-status';
+  status.textContent = '添加号码后，可在列表中选择、立即获取验证码或删除。';
 
   const runtimeById = new Map<string, TargetRuntime>();
   let currentState: SmsRelayState | null = null;
-  let pollTimer: number | null = null;
   let lastSavedInput = '';
   let inputSaveTimer: number | null = null;
   let inputFocused = false;
 
-  container.append(
-    summary,
-    createField('接码信息', input),
-    buttonRow,
-    targetTitle,
-    targetList,
-    historyTitle,
-    historyTable,
-    status,
-  );
+  container.append(summary, inputRow, targetList, status);
 
   input.addEventListener('input', () => {
     scheduleInputSave();
-    renderTargetsFromInput();
+    renderSummary();
   });
   input.addEventListener('focus', () => {
     inputFocused = true;
@@ -72,45 +60,24 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
     inputFocused = false;
     void persistInputNow();
   });
-
-  saveButton.addEventListener('click', async () => {
+  addButton.addEventListener('click', async () => {
     await persistInputNow();
-    renderTargetsFromInput();
-    await pollAllTargets();
-  });
-
-  pollNowButton.addEventListener('click', async () => {
-    await persistInputNow();
-    renderTargetsFromInput();
-    await pollAllTargets();
-  });
-
-  clearHistoryButton.addEventListener('click', async () => {
-    const next = await saveSmsRelayState({ history: [] });
-    currentState = next;
-    renderHistory(next.history);
-    setStatus(status, '验证码历史已清空，输入内容已保留。', 'ok');
+    await addTargetsFromInput();
   });
 
   const update = async () => {
-    const state = await loadSmsRelayState();
+    const state = await loadSharedSmsRelayState();
     currentState = state;
     if (!inputFocused && input.value !== state.rawInput) {
       input.value = state.rawInput;
       lastSavedInput = state.rawInput;
-      renderTargetsFromInput();
     }
-    renderHistory(state.history);
+    renderTargetsFromState();
     renderSummary();
   };
 
-  const onShow = async () => {
-    await update();
-    ensurePolling();
-  };
-
   void update();
-  return { update, onShow };
+  return { update, onShow: update };
 
   function scheduleInputSave(): void {
     if (inputSaveTimer) {
@@ -128,21 +95,48 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
     if (rawInput === lastSavedInput) {
       return;
     }
-    currentState = await saveSmsRelayState({ rawInput });
+    currentState = await saveSharedSmsRelayState({ rawInput });
     lastSavedInput = rawInput;
     renderSummary();
   }
 
-  function ensurePolling(): void {
-    if (pollTimer !== null) {
+  async function addTargetsFromInput(): Promise<void> {
+    const state = currentState || await loadSmsRelayState();
+    const result = addSmsRelayTargetsToList(state.targets, state.selectedTargetId, input.value);
+
+    if (result.errors.length) {
+      setStatus(status, result.errors.join('；'), 'error');
       return;
     }
-    pollTimer = window.setInterval(() => void pollAllTargets(), POLL_INTERVAL_MS);
+    if (!result.addedCount) {
+      setStatus(status, result.targets.length ? '号码已在列表中，无需重复添加。' : '请先输入号码和 API。', 'pending');
+      return;
+    }
+
+    setStatus(status, '正在准备接码 API 域名权限...', 'pending');
+    const permission = await ensureSmsRelayHostPermissions(result.targets.map((target) => target.url));
+    if (!permission.ok) {
+      setStatus(status, permission.message, 'error');
+      return;
+    }
+
+    input.value = '';
+    lastSavedInput = '';
+    currentState = await saveSharedSmsRelayState({
+      rawInput: '',
+      targets: result.targets,
+      selectedTargetId: result.selectedTargetId,
+    });
+    renderTargetsFromState();
+    renderSummary();
+    setStatus(status, `已添加 ${result.addedCount} 个号码。`, 'ok');
   }
 
-  function renderTargetsFromInput(): void {
-    const parsed = parseSmsRelayTargets(input.value);
-    const nextIds = new Set(parsed.targets.map((target) => target.id));
+  function renderTargetsFromState(): void {
+    const state = currentState;
+    const targets = state?.targets || [];
+    const selectedTargetId = state?.selectedTargetId || '';
+    const nextIds = new Set(targets.map((target) => target.id));
 
     for (const [id] of runtimeById) {
       if (!nextIds.has(id)) {
@@ -150,7 +144,7 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
       }
     }
 
-    for (const target of parsed.targets) {
+    for (const target of targets) {
       const current = runtimeById.get(target.id);
       if (current) {
         current.target = target;
@@ -158,190 +152,159 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
         runtimeById.set(target.id, {
           target,
           status: 'waiting',
-          message: '等待获取',
+          message: '未获取',
           code: '',
-          lastCheckedAt: 0,
           inFlight: false,
         });
       }
     }
 
     targetList.textContent = '';
-    if (!parsed.targets.length) {
-      targetList.append(createEmpty(parsed.errors[0] || '暂无号码，按每行“号码----API链接”输入。'));
-    } else {
-      for (const target of parsed.targets) {
-        const runtime = runtimeById.get(target.id);
-        if (runtime) {
-          targetList.append(createTargetRow(runtime));
-        }
-      }
+    if (!targets.length) {
+      targetList.append(createEmpty('暂无号码，请输入后点击添加。'));
+      return;
     }
 
-    if (parsed.errors.length) {
-      setStatus(status, parsed.errors.join('；'), 'error');
-    } else if (parsed.targets.length) {
-      setStatus(status, `已加载 ${parsed.targets.length} 个接码链接，每 3 秒自动获取。`, 'pending');
-    } else {
-      setStatus(status, '输入内容会自动保存。', 'pending');
+    for (const target of targets) {
+      const runtime = runtimeById.get(target.id);
+      if (runtime) {
+        targetList.append(createTargetRow(runtime, runtime.target.id === selectedTargetId));
+      }
     }
-    renderSummary();
   }
 
   function renderSummary(): void {
-    const parsed = parseSmsRelayTargets(input.value);
-    const historyCount = currentState?.history.length || 0;
-    const foundCount = [...runtimeById.values()].filter((item) => item.code).length;
-    summary.textContent = `${parsed.targets.length} 个接码链接 · ${foundCount} 个当前验证码 · ${historyCount} 条历史`;
+    const targetCount = currentState?.targets.length || 0;
+    const selected = getSelectedSmsRelayTarget(currentState?.targets || [], currentState?.selectedTargetId || '');
+    const selectedRegion = selected ? formatSmsRelayRegion(selected.dialCode, selected.countryName) : '';
+    const selectedText = selected ? [selected.phone, selectedRegion].filter(Boolean).join(' · ') : '';
+    summary.textContent = selected ? `${targetCount} 个号码 · 当前：${selectedText}` : `${targetCount} 个号码 · 未选择`;
   }
 
-  async function pollAllTargets(): Promise<void> {
-    const parsed = parseSmsRelayTargets(input.value);
-    if (!parsed.targets.length || parsed.errors.length) {
-      return;
-    }
-
-    await persistInputNow();
-    await Promise.all(parsed.targets.map((target) => pollTarget(target)));
-    renderTargetsFromInput();
-    renderHistory(currentState?.history || []);
-  }
-
-  async function pollTarget(target: SmsRelayTarget): Promise<void> {
-    const runtime = runtimeById.get(target.id);
-    if (!runtime || runtime.inFlight) {
-      return;
-    }
-
-    runtime.inFlight = true;
-    runtime.status = runtime.code ? 'found' : 'waiting';
-    runtime.message = '正在获取...';
-    renderTargetsFromInput();
-
-    const result = await fetchSmsRelayCode(target);
-    runtime.inFlight = false;
-    runtime.lastCheckedAt = Date.now();
-
-    if (result.kind === 'code') {
-      runtime.status = 'found';
-      runtime.code = result.code;
-      runtime.message = result.message;
-      await appendCodeHistory(target.phone, result.code, result.message);
-      setStatus(status, `${target.phone} 收到验证码 ${result.code}`, 'ok');
-      return;
-    }
-
-    if (result.kind === 'error') {
-      runtime.status = 'error';
-      runtime.message = result.message;
-      setStatus(status, `${target.phone} 获取失败：${result.message}`, 'error');
-      return;
-    }
-
-    runtime.status = 'waiting';
-    runtime.message = result.message;
-  }
-
-  async function appendCodeHistory(phone: string, code: string, message: string): Promise<void> {
-    const state = currentState || await loadSmsRelayState();
-    const exists = state.history.some((item) => item.phone === phone && item.code === code && item.message === message);
-    if (exists) {
-      currentState = state;
-      return;
-    }
-
-    const record: SmsCodeRecord = {
-      id: `${phone}-${code}-${Date.now()}`,
-      phone,
-      code,
-      message,
-      receivedAt: Date.now(),
-    };
-    const nextHistory = [record, ...state.history].slice(0, 80);
-    currentState = await saveSmsRelayState({ history: nextHistory });
-  }
-
-  function createTargetRow(runtime: TargetRuntime): HTMLElement {
+  function createTargetRow(runtime: TargetRuntime, selected: boolean): HTMLElement {
     const row = document.createElement('div');
     row.className = 'opx-sms-target-row';
     row.dataset.status = runtime.status;
+    row.dataset.selected = String(selected);
+    row.addEventListener('click', () => void selectTarget(runtime.target));
+
+    const radio = document.createElement('input');
+    radio.className = 'opx-sms-target-radio';
+    radio.type = 'radio';
+    radio.name = 'opx-sms-target';
+    radio.checked = selected;
+    radio.setAttribute('aria-label', `选择 ${runtime.target.phone}`);
+    radio.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void selectTarget(runtime.target);
+    });
 
     const main = document.createElement('div');
     main.className = 'opx-sms-target-main';
     const phone = document.createElement('strong');
     phone.textContent = runtime.target.phone;
     const detail = document.createElement('span');
-    detail.textContent = runtime.code ? runtime.message : runtime.message || '等待获取';
+    const region = formatSmsRelayRegion(runtime.target.dialCode, runtime.target.countryName);
+    detail.textContent = [region, runtime.code ? `验证码：${runtime.code}` : runtime.message]
+      .filter(Boolean)
+      .join(' · ');
     main.append(phone, detail);
 
-    const codeButton = document.createElement('button');
-    codeButton.className = 'opx-sms-code-chip';
-    codeButton.type = 'button';
-    codeButton.textContent = runtime.code || (runtime.inFlight ? '...' : '等待');
-    codeButton.disabled = !runtime.code;
-    codeButton.title = runtime.code ? '点击复制验证码' : '尚未收到验证码';
-    codeButton.addEventListener('click', () => void copyCode(runtime.code, codeButton));
+    const actions = document.createElement('div');
+    actions.className = 'opx-sms-target-actions';
+    const fetchButton = createMiniButton(runtime.inFlight ? '获取中' : '立即获取');
+    fetchButton.disabled = runtime.inFlight;
+    fetchButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void fetchTarget(runtime.target);
+    });
+    const deleteButton = createMiniButton('删除', 'opx-mini-button opx-mini-button-danger');
+    deleteButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void deleteTarget(runtime.target);
+    });
+    actions.append(fetchButton, deleteButton);
 
-    row.append(main, codeButton);
+    row.append(radio, main, actions);
     return row;
   }
 
-  function renderHistory(history: SmsCodeRecord[]): void {
-    historyTable.textContent = '';
-    const header = document.createElement('div');
-    header.className = 'opx-sms-table-row opx-sms-table-head';
-    header.append(createCell('号码'), createCell('验证码'), createCell('时间'));
-    historyTable.append(header);
+  async function selectTarget(target: SmsRelayTarget): Promise<void> {
+    const targetId = target.id;
+    const state = currentState || await loadSmsRelayState();
+    if (state.selectedTargetId === targetId) {
+      return;
+    }
+    currentState = await saveSharedSmsRelayState(
+      { selectedTargetId: targetId },
+      { remoteSelectedTargetId: getPreferredRemoteSmsTargetId(target) },
+    );
+    renderTargetsFromState();
+    renderSummary();
+    setStatus(status, '已选择号码。', 'ok');
+  }
 
-    if (!history.length) {
-      const empty = document.createElement('div');
-      empty.className = 'opx-empty-inline';
-      empty.textContent = '暂无验证码历史。';
-      historyTable.append(empty);
+  async function fetchTarget(target: SmsRelayTarget): Promise<void> {
+    const runtime = runtimeById.get(target.id);
+    if (!runtime || runtime.inFlight) {
       return;
     }
 
-    for (const item of history) {
-      const row = document.createElement('div');
-      row.className = 'opx-sms-table-row';
-      const codeButton = document.createElement('button');
-      codeButton.className = 'opx-sms-code-chip';
-      codeButton.type = 'button';
-      codeButton.textContent = item.code;
-      codeButton.title = item.message || '点击复制验证码';
-      codeButton.addEventListener('click', () => void copyCode(item.code, codeButton));
-      row.append(
-        createCell(item.phone),
-        wrapCell(codeButton),
-        createCell(formatTime(item.receivedAt)),
-      );
-      historyTable.append(row);
+    runtime.inFlight = true;
+    runtime.status = 'waiting';
+    runtime.message = '正在获取...';
+    renderTargetsFromState();
+    setStatus(status, `正在获取 ${target.phone} 的验证码...`, 'pending');
+
+    const result = await fetchSmsRelayCode(target);
+    runtime.inFlight = false;
+    if (result.kind === 'code') {
+      runtime.status = 'found';
+      runtime.code = result.code;
+      runtime.message = result.message;
+      const history = [
+        ...(currentState?.history || []),
+        {
+          id: `${target.phone}-${result.code}-${Date.now()}`,
+          phone: target.phone,
+          code: result.code,
+          message: result.message,
+          receivedAt: Date.now(),
+        },
+      ].slice(-50);
+      currentState = await saveSharedSmsRelayState({ history });
+      setStatus(status, `${target.phone} 已获取验证码 ${result.code}`, 'ok');
+    } else if (result.kind === 'error') {
+      runtime.status = 'error';
+      runtime.message = result.message;
+      setStatus(status, `${target.phone} 获取失败：${result.message}`, 'error');
+    } else {
+      runtime.status = 'waiting';
+      runtime.message = result.message || '暂未收到短信';
+      setStatus(status, `${target.phone} 暂未收到短信。`, 'ok');
     }
+    renderTargetsFromState();
   }
 
-  async function copyCode(code: string, button: HTMLButtonElement): Promise<void> {
-    if (!code) {
-      return;
+  async function deleteTarget(target: SmsRelayTarget): Promise<void> {
+    const state = currentState || await loadSmsRelayState();
+    const targets = state.targets.filter((item) => item.id !== target.id);
+    const selectedTargetId = normalizeSelectedSmsRelayTargetId(targets, state.selectedTargetId);
+    runtimeById.delete(target.id);
+    const response = await deleteSharedSmsRelayTarget(target);
+    if (isLocalStoreResponse(response) && response.ok && response.store) {
+      currentState = await saveSmsRelayState({
+        targets: response.store.smsRelay.targets,
+        selectedTargetId: response.store.smsRelay.selectedTargetId,
+        history: response.store.smsRelay.history,
+      });
+    } else {
+      currentState = await saveSharedSmsRelayState({ targets, selectedTargetId });
     }
-    await navigator.clipboard.writeText(code);
-    const original = button.textContent || code;
-    button.textContent = '已复制';
-    button.classList.add('is-copied');
-    window.setTimeout(() => {
-      button.textContent = original;
-      button.classList.remove('is-copied');
-    }, 1200);
+    renderTargetsFromState();
+    renderSummary();
+    setStatus(status, `已删除 ${target.phone}。`, 'ok');
   }
-}
-
-function createField(label: string, control: HTMLElement): HTMLElement {
-  const field = document.createElement('label');
-  field.className = 'opx-field';
-  const caption = document.createElement('span');
-  caption.className = 'opx-label';
-  caption.textContent = label;
-  field.append(caption, control);
-  return field;
 }
 
 function createButton(label: string, className = 'opx-button'): HTMLButtonElement {
@@ -352,11 +315,12 @@ function createButton(label: string, className = 'opx-button'): HTMLButtonElemen
   return button;
 }
 
-function createTitle(text: string): HTMLElement {
-  const title = document.createElement('div');
-  title.className = 'opx-section-title';
-  title.textContent = text;
-  return title;
+function createMiniButton(label: string, className = 'opx-mini-button opx-mini-button-secondary'): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.className = className;
+  button.type = 'button';
+  button.textContent = label;
+  return button;
 }
 
 function createEmpty(text: string): HTMLElement {
@@ -366,33 +330,100 @@ function createEmpty(text: string): HTMLElement {
   return item;
 }
 
-function createCell(text: string): HTMLElement {
-  const cell = document.createElement('div');
-  cell.className = 'opx-sms-table-cell';
-  cell.textContent = text;
-  return cell;
-}
-
-function wrapCell(content: HTMLElement): HTMLElement {
-  const cell = document.createElement('div');
-  cell.className = 'opx-sms-table-cell';
-  cell.append(content);
-  return cell;
-}
-
 function setStatus(element: HTMLElement, message: string, type: 'pending' | 'ok' | 'error'): void {
   element.textContent = message;
   element.dataset.type = type;
 }
 
-function formatTime(value: number): string {
-  if (!value) {
-    return '-';
+async function loadSharedSmsRelayState(): Promise<SmsRelayState> {
+  const state = await loadSmsRelayState();
+  const response = await browser.runtime.sendMessage({ type: 'opx:local-store-get' }).catch(() => null);
+  if (!isLocalStoreResponse(response) || !response.ok || !response.store) {
+    return state;
   }
-  return new Date(value).toLocaleTimeString('zh-CN', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+  return saveSmsRelayState({
+    targets: response.store.smsRelay.targets,
+    selectedTargetId: response.store.smsRelay.selectedTargetId,
+    history: response.store.smsRelay.history,
   });
+}
+
+async function saveSharedSmsRelayState(
+  patch: Partial<SmsRelayState>,
+  options: { remoteSelectedTargetId?: string } = {},
+): Promise<SmsRelayState> {
+  let next = await saveSmsRelayState(patch);
+  if (patch.targets) {
+    const response = await browser.runtime.sendMessage({
+      type: 'opx:local-store-upsert-sms-targets',
+      targets: patch.targets,
+    }).catch(() => null);
+    if (isLocalStoreResponse(response) && response.ok && response.store) {
+      next = await saveSmsRelayState({
+        targets: response.store.smsRelay.targets,
+        selectedTargetId: response.store.smsRelay.selectedTargetId,
+        history: response.store.smsRelay.history,
+      });
+    }
+  }
+  if (patch.selectedTargetId !== undefined || patch.history !== undefined) {
+    const response = await browser.runtime.sendMessage({
+      type: 'opx:local-store-update-sms-relay',
+      patch: {
+        selectedTargetId: options.remoteSelectedTargetId || patch.selectedTargetId,
+        history: patch.history,
+      },
+    }).catch(() => null);
+    if (isLocalStoreResponse(response) && response.ok && response.store) {
+      next = await saveSmsRelayState({
+        targets: response.store.smsRelay.targets,
+        selectedTargetId: response.store.smsRelay.selectedTargetId,
+        history: response.store.smsRelay.history,
+      });
+    }
+  }
+  return next;
+}
+
+async function deleteSharedSmsRelayTarget(target: SmsRelayTarget): Promise<unknown> {
+  const targetIds = getCompatibleSmsRelayTargetIds(target);
+  let latestResponse: unknown = null;
+  for (const targetId of targetIds) {
+    latestResponse = await browser.runtime.sendMessage({
+      type: 'opx:local-store-delete-sms-target',
+      targetId,
+    }).catch(() => null);
+    if (!isLocalStoreResponse(latestResponse) || !latestResponse.ok || !latestResponse.store) {
+      continue;
+    }
+    if (!hasAnySmsTargetId(latestResponse.store.smsRelay.targets, targetIds)) {
+      break;
+    }
+  }
+  return latestResponse;
+}
+
+function getPreferredRemoteSmsTargetId(target: SmsRelayTarget): string {
+  return getCompatibleSmsRelayTargetIds(target)[1] || target.id;
+}
+
+function hasAnySmsTargetId(targets: SmsRelayTarget[], targetIds: string[]): boolean {
+  return targets.some((target) => targetIds.includes(target.id));
+}
+
+function isLocalStoreResponse(value: unknown): value is {
+  ok: boolean;
+  store?: {
+    smsRelay: {
+      targets: SmsRelayTarget[];
+      selectedTargetId: string;
+      history: SmsRelayState['history'];
+    };
+  };
+} {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      typeof (value as { ok?: unknown }).ok === 'boolean',
+  );
 }

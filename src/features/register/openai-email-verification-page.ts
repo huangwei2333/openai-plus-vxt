@@ -1,4 +1,6 @@
 import type { ActionResult } from './types';
+import { waitForDocumentLoadComplete } from '../../app/page-ready.js';
+import { getInputValue, setInputValueWithFallback } from './dom-input';
 
 const OTP_SELECTORS = [
   'input[name="code"]',
@@ -9,23 +11,31 @@ const OTP_SELECTORS = [
 ];
 
 export function isEmailVerificationPage(): boolean {
-  return location.hostname === 'auth.openai.com' && location.pathname.startsWith('/email-verification');
+  return location.hostname === 'auth.openai.com' &&
+    location.pathname.startsWith('/email-verification') &&
+    Boolean(findOtpInput());
 }
 
 export async function fillOtpAndContinue(code: string): Promise<ActionResult> {
   const normalized = code.replace(/\D/g, '');
-  if (!normalized) {
-    return fail('验证码不能为空');
+  if (!/^\d{6}$/.test(normalized)) {
+    return fail('验证码必须是 6 位数字');
   }
 
-  const input = findOtpInput();
+  const loaded = await waitForDocumentLoadComplete(15_000);
+  if (!loaded) {
+    return fail('页面仍在加载中，已停止自动填写验证码，请稍后重试');
+  }
+
+  const input = await waitForOtpInput(10_000);
   if (!input) {
     return fail('没有找到验证码输入框');
   }
 
-  setNativeValue(input, normalized);
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  input.dispatchEvent(new Event('change', { bubbles: true }));
+  const filledInput = await setInputValueWithFallback(findOtpInput, normalized);
+  if (!filledInput || getInputValue(filledInput) !== normalized) {
+    return fail(`验证码没有成功写入输入框，当前输入框值：${getInputValue(filledInput) || '空'}`);
+  }
 
   await waitForUiTick();
 
@@ -66,6 +76,18 @@ function findOtpInput(): HTMLInputElement | null {
   }) ?? null;
 }
 
+async function waitForOtpInput(timeoutMs: number): Promise<HTMLInputElement | null> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const input = findOtpInput();
+    if (input) {
+      return input;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 150));
+  }
+  return null;
+}
+
 function findContinueButton(): HTMLButtonElement | null {
   const submit = document.querySelector<HTMLButtonElement>('button[type="submit"]');
   if (submit) {
@@ -76,11 +98,6 @@ function findContinueButton(): HTMLButtonElement | null {
     const text = (button.textContent || '').trim();
     return text === '继续' || text.toLowerCase() === 'continue';
   }) ?? null;
-}
-
-function setNativeValue(input: HTMLInputElement, value: string): void {
-  const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-  descriptor?.set?.call(input, value);
 }
 
 function waitForUiTick(): Promise<void> {

@@ -30,6 +30,7 @@ export async function fetchChatGptSession(): Promise<ChatGptSessionResponse> {
       ok: false,
       message: session.email ? '已读取账号信息，但 session 内没有 accessToken' : '未读取到登录 session',
       session,
+      raw: data,
     };
   }
 
@@ -37,6 +38,7 @@ export async function fetchChatGptSession(): Promise<ChatGptSessionResponse> {
     ok: true,
     message: '已读取 ChatGPT session',
     session,
+    raw: data,
   };
 }
 
@@ -47,6 +49,14 @@ function extractSessionInfo(data: Record<string, unknown>): ChatGptSessionInfo {
     email: stringValue(user.email),
     planType: stringValue(account.planType) || stringValue(account.plan_type),
     accessToken: stringValue(data.accessToken),
+    idToken: stringValue(data.idToken),
+    refreshToken: stringValue(data.refreshToken),
+    accountId: stringValue(account.id) || stringValue(account.accountId) || stringValue(account.account_id),
+    planExpiresAt: stringValue(account.expires) ||
+      stringValue(account.expiresAt) ||
+      stringValue(account.planExpiresAt) ||
+      stringValue(account.plan_expires_at),
+    sessionExpiredAt: stringValue(data.expired) || stringValue(data.expires),
     fetchedAt: Date.now(),
   };
 }

@@ -1,5 +1,13 @@
 import { DEFAULT_CHECKOUT_OPTIONS, normalizeCheckoutOptions } from '../features/link-extractor/checkout';
+import { normalizeAccountRecords } from '../features/accounts/session';
+import {
+  mergeRegisterEmailItems,
+  normalizeRegisterEmailItems,
+  syncRegisterEmailItemsWithSessionEmails,
+} from '../features/register/email-alias';
+import { addSmsRelayTargetsToList, normalizeSelectedSmsRelayTargetId, normalizeSmsRelayTargets } from '../features/sms/target-list';
 import type { FeatureTab } from './types';
+import type { AccountRecord } from '../features/accounts/types';
 import type { LinkExtractorState } from '../features/link-extractor/types';
 import type { AccountInputMode, RegisterState } from '../features/register/types';
 import type { SmsCodeRecord, SmsRelayState } from '../features/sms/types';
@@ -14,6 +22,7 @@ interface AppState {
   register: RegisterState;
   linkExtractor: LinkExtractorState;
   smsRelay: SmsRelayState;
+  accounts: AccountRecord[];
 }
 
 const DEFAULT_REGISTER_STATE: RegisterState = {
@@ -21,6 +30,7 @@ const DEFAULT_REGISTER_STATE: RegisterState = {
   email: '',
   accountLine: '',
   inputMode: 'empty',
+  emailItems: [],
   autoOtp: false,
   apiBase: DEFAULT_API_BASE,
   otpRequestedAt: 0,
@@ -34,16 +44,19 @@ const DEFAULT_LINK_STATE: LinkExtractorState = {
 
 const DEFAULT_SMS_RELAY_STATE: SmsRelayState = {
   rawInput: '',
+  targets: [],
+  selectedTargetId: '',
   history: [],
   updatedAt: 0,
 };
 
 const DEFAULT_STATE: AppState = {
-  activeTab: 'register',
+  activeTab: 'config',
   panelCollapsed: false,
   register: DEFAULT_REGISTER_STATE,
   linkExtractor: DEFAULT_LINK_STATE,
   smsRelay: DEFAULT_SMS_RELAY_STATE,
+  accounts: [],
 };
 
 export async function loadAppState(): Promise<AppState> {
@@ -113,8 +126,20 @@ export async function saveSmsRelayState(patch: Partial<SmsRelayState>): Promise<
   return next.smsRelay;
 }
 
+export async function loadAccountRecords(): Promise<AccountRecord[]> {
+  return (await loadAppState()).accounts;
+}
+
+export async function saveAccountRecords(accounts: AccountRecord[]): Promise<AccountRecord[]> {
+  const current = await loadAppState();
+  const nextAccounts = normalizeAccountRecords(accounts);
+  const next = normalizeAppState({ ...current, accounts: nextAccounts });
+  await browser.storage.local.set({ [STORAGE_KEY]: next });
+  return next.accounts;
+}
+
 export function isFeatureTab(value: string): value is FeatureTab {
-  return value === 'register' || value === 'link' || value === 'address' || value === 'sms';
+  return value === 'register' || value === 'subscription' || value === 'config' || value === 'accounts';
 }
 
 function normalizeAppState(value: unknown): AppState {
@@ -122,22 +147,28 @@ function normalizeAppState(value: unknown): AppState {
   const registerSource = isRecord(source.register) ? source.register : source;
   const linkSource = isRecord(source.linkExtractor) ? source.linkExtractor : source;
   const smsRelaySource = isRecord(source.smsRelay) ? source.smsRelay : DEFAULT_SMS_RELAY_STATE;
+  const accounts = normalizeAccountRecords(source.accounts);
   return {
     activeTab: isFeatureTab(String(source.activeTab || '')) ? source.activeTab as FeatureTab : DEFAULT_STATE.activeTab,
     panelCollapsed: Boolean(source.panelCollapsed),
-    register: normalizeRegisterState(registerSource),
+    register: normalizeRegisterState(registerSource, accounts),
     linkExtractor: normalizeLinkExtractorState(linkSource),
     smsRelay: normalizeSmsRelayState(smsRelaySource),
+    accounts,
   };
 }
 
-function normalizeRegisterState(value: unknown): RegisterState {
+function normalizeRegisterState(value: unknown, accounts: AccountRecord[] = []): RegisterState {
   const source = isRecord(value) ? value : {};
+  const emailItems = normalizeRegisterEmailItems(source.emailItems);
+  const rawInput = String(source.rawInput || DEFAULT_REGISTER_STATE.rawInput);
+  const normalizedEmailItems = emailItems.length > 0 ? emailItems : mergeRegisterEmailItems(rawInput, []);
   return {
-    rawInput: String(source.rawInput || DEFAULT_REGISTER_STATE.rawInput),
+    rawInput,
     email: String(source.email || DEFAULT_REGISTER_STATE.email),
     accountLine: String(source.accountLine || DEFAULT_REGISTER_STATE.accountLine),
     inputMode: normalizeInputMode(source.inputMode),
+    emailItems: syncRegisterEmailItemsWithSessionEmails(normalizedEmailItems, accounts.map((account) => account.email)),
     autoOtp: Boolean(source.autoOtp),
     apiBase: String(source.apiBase || DEFAULT_REGISTER_STATE.apiBase),
     otpRequestedAt: Number(source.otpRequestedAt || DEFAULT_REGISTER_STATE.otpRequestedAt),
@@ -155,11 +186,17 @@ function normalizeLinkExtractorState(value: unknown): LinkExtractorState {
 
 function normalizeSmsRelayState(value: unknown): SmsRelayState {
   const source = isRecord(value) ? value : {};
+  const rawInput = String(source.rawInput || DEFAULT_SMS_RELAY_STATE.rawInput);
+  const savedTargets = normalizeSmsRelayTargets(source.targets);
+  const migratedTargets = savedTargets.length ? [] : addSmsRelayTargetsToList([], '', rawInput).targets;
+  const targets = savedTargets.length ? savedTargets : migratedTargets;
   const history = Array.isArray(source.history)
     ? source.history.map(normalizeSmsCodeRecord).filter((item): item is SmsCodeRecord => Boolean(item))
     : DEFAULT_SMS_RELAY_STATE.history;
   return {
-    rawInput: String(source.rawInput || DEFAULT_SMS_RELAY_STATE.rawInput),
+    rawInput: migratedTargets.length ? '' : rawInput,
+    targets,
+    selectedTargetId: normalizeSelectedSmsRelayTargetId(targets, String(source.selectedTargetId || '')),
     history,
     updatedAt: Number(source.updatedAt || DEFAULT_SMS_RELAY_STATE.updatedAt),
   };

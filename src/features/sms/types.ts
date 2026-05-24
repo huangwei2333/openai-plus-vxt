@@ -2,6 +2,8 @@ export interface SmsRelayTarget {
   id: string;
   phone: string;
   url: string;
+  dialCode?: string;
+  countryName?: string;
 }
 
 export interface SmsCodeRecord {
@@ -14,6 +16,8 @@ export interface SmsCodeRecord {
 
 export interface SmsRelayState {
   rawInput: string;
+  targets: SmsRelayTarget[];
+  selectedTargetId: string;
   history: SmsCodeRecord[];
   updatedAt: number;
 }
@@ -26,6 +30,8 @@ export interface SmsRelayFetchMessage {
 export interface SmsRelayFetchResponse {
   ok: boolean;
   message: string;
+  code?: string;
+  redirectUrl?: string;
   data?: string;
   status?: number;
   text?: string;

@@ -1,4 +1,5 @@
 import type { SmsRelayTarget } from './types';
+import { createSmsRelayTargetId, normalizeSmsRelayPhone } from './phone-region.js';
 
 const MAX_CODE_LENGTH = 8;
 const MIN_CODE_LENGTH = 4;
@@ -61,15 +62,22 @@ export function parseSmsRelayTargets(input: string): ParsedSmsTargets {
       return;
     }
 
-    const key = `${phone}\n${url}`;
+    const parsedPhone = normalizeSmsRelayPhone(phone);
+    if (!parsedPhone.phone) {
+      errors.push(`第 ${index + 1} 行号码无法识别`);
+      return;
+    }
+    const key = `${parsedPhone.dialCode}\n${parsedPhone.phone}\n${url}`;
     if (seen.has(key)) {
       return;
     }
     seen.add(key);
     targets.push({
-      id: makeTargetId(phone, url),
-      phone,
+      id: createSmsRelayTargetId(parsedPhone.phone, url, parsedPhone.dialCode),
+      phone: parsedPhone.phone,
       url,
+      ...(parsedPhone.dialCode ? { dialCode: parsedPhone.dialCode } : {}),
+      ...(parsedPhone.countryName ? { countryName: parsedPhone.countryName } : {}),
     });
   });
 
@@ -257,8 +265,4 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-function makeTargetId(phone: string, url: string): string {
-  return `${phone}|${url}`;
 }

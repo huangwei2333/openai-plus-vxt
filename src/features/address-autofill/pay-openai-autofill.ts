@@ -1,15 +1,11 @@
+import { waitForDocumentLoadComplete } from '../../app/page-ready.js';
 import { loadAddressAutofillSettings, saveAddressAutofillSettings } from '../settings/state';
 import type { AddressAutofillSettings } from '../settings/types';
 import type { AddressProfile, RandomAddressResponse } from './types';
 
 const LOG_PREFIX = '[OPX Pay Autofill]';
-const PAYPAL_SELECTORS = [
-  '[data-testid="paypal-accordion-item"]',
-  '#payment-method-accordion-item-title-paypal',
-  'button[data-testid="paypal-accordion-item-button"]',
-  'button[aria-label*="PayPal"]',
-  'button[aria-label*="paypal" i]',
-];
+const PAYPAL_ACCORDION_BUTTON_SELECTOR = 'button[data-testid="paypal-accordion-item-button"]';
+const HOSTED_PAYMENT_SUBMIT_BUTTON_SELECTOR = 'button[data-testid="hosted-payment-submit-button"]';
 
 let initialized = false;
 let running = false;
@@ -67,13 +63,29 @@ export async function fillPayOpenAiAddressNow(address: AddressProfile): Promise<
     return { ok: false, filled: 0, message: '当前不是 pay.openai.com 页面' };
   }
 
-  selectPaypalIfPresent();
-  await delay(450);
+  const loaded = await waitForDocumentLoadComplete(15_000);
+  if (!loaded) {
+    return { ok: false, filled: 0, message: '页面仍在加载中，已停止自动填写 OpenAI Pay，请稍后重试' };
+  }
+
+  const paypalSelected = await selectPaypalIfPresent();
+  if (!paypalSelected) {
+    return { ok: false, filled: 0, message: '未选中 PayPal 支付方式，请确认 PayPal 单选框是否可见并可点击' };
+  }
+
   const filled = await fillCheckoutFields(address);
+  const billingReady = hasFilledBillingAddress(address);
+  if (!billingReady) {
+    return { ok: false, filled, message: filled > 0 ? '已尝试填写账单地址，但页面仍未显示完整账单地址' : '未找到可填写的 OpenAI 支付账单地址字段' };
+  }
+
+  const subscribed = await clickSubscribeIfReady();
   return {
-    ok: filled > 0,
+    ok: subscribed,
     filled,
-    message: filled > 0 ? `已填写 OpenAI 支付页 ${filled} 项` : '未找到可填写的 OpenAI 支付字段',
+    message: subscribed
+      ? `已填写 OpenAI 支付页 ${filled} 项，并已点击订阅`
+      : 'PayPal 支付方式和账单地址已就绪，但“订阅”按钮不可点击',
   };
 }
 
@@ -132,31 +144,134 @@ async function fillCheckoutFields(address: AddressProfile): Promise<number> {
   return filled;
 }
 
-function selectPaypalIfPresent(): boolean {
-  const paypalRadio = document.querySelector<HTMLInputElement>('#payment-method-accordion-item-title-paypal');
-  if (paypalRadio?.checked) {
-    return true;
-  }
+function hasFilledBillingAddress(address: AddressProfile): boolean {
+  const groups = [
+    {
+      selectors: ['#billingName', 'input[name="billingName"]', 'input[autocomplete="billing name"]'],
+      expected: [address.fullName],
+    },
+    {
+      selectors: ['#billingAddressLine1', 'input[name="billingAddressLine1"]', 'input[autocomplete="billing address-line1"]'],
+      expected: [address.line1],
+    },
+    {
+      selectors: ['#billingLocality', 'input[name="billingLocality"]', 'input[autocomplete="billing address-level2"]'],
+      expected: [address.city],
+    },
+    {
+      selectors: ['#billingPostalCode', 'input[name="billingPostalCode"]', 'input[autocomplete="billing postal-code"]'],
+      expected: [address.postalCode],
+    },
+  ];
 
-  for (const selector of PAYPAL_SELECTORS) {
-    const element = document.querySelector<HTMLElement>(selector);
-    if (!element || !isVisible(element)) {
+  let visibleGroups = 0;
+  let readyGroups = 0;
+  for (const group of groups) {
+    const element = group.selectors.map(findFirstVisibleControl).find(Boolean);
+    if (!element) {
       continue;
     }
-    clickElement(element);
+    visibleGroups += 1;
+    if (controlHasValue(element, group.expected)) {
+      readyGroups += 1;
+    }
+  }
+
+  return visibleGroups >= 3 && readyGroups === visibleGroups;
+}
+
+async function selectPaypalIfPresent(): Promise<boolean> {
+  if (isPaypalPaymentSelected() && hasVisibleBillingAddressFields()) {
     return true;
   }
 
-  const textMatch = Array.from(document.querySelectorAll<HTMLElement>('button, label, [role="button"], [role="radio"], [data-testid], div'))
-    .filter(isVisible)
-    .find((element) => normalizedText(element.innerText || element.textContent).includes('paypal'));
-
-  if (textMatch) {
-    clickElement(textMatch);
-    return true;
+  const button = findPaypalAccordionButton();
+  if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') {
+    return false;
   }
 
+  clickElement(button);
+  return waitForPaypalBillingAddressFields();
+}
+
+function findPaypalAccordionButton(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>(PAYPAL_ACCORDION_BUTTON_SELECTOR);
+}
+
+function isPaypalPaymentSelected(): boolean {
+  const button = findPaypalAccordionButton();
+  return Boolean(button && hasPaymentMethodSelectionMarker(button));
+}
+
+async function waitForPaypalBillingAddressFields(timeoutMs = 5_000): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (isPaypalPaymentSelected() && hasVisibleBillingAddressFields()) {
+      return true;
+    }
+    await delay(250);
+  }
   return false;
+}
+
+function hasPaymentMethodSelectionMarker(element: HTMLElement): boolean {
+  return element.getAttribute('aria-checked') === 'true' ||
+    element.getAttribute('aria-selected') === 'true' ||
+    element.getAttribute('aria-pressed') === 'true' ||
+    element.getAttribute('aria-expanded') === 'true' ||
+    element.getAttribute('data-selected') === 'true' ||
+    ['checked', 'open', 'selected', 'active', 'expanded'].includes(normalizedText(element.getAttribute('data-state'))) ||
+    /\b(?:is-)?(?:selected|active|checked|expanded|open)\b/i.test(element.className);
+}
+
+function hasVisibleBillingAddressFields(): boolean {
+  return [
+    '#billingAddressLine1',
+    '#billingLocality',
+    '#billingPostalCode',
+    '#billingAdministrativeArea',
+  ].some((selector) => {
+    const element = document.querySelector(selector);
+    return Boolean(element && isVisible(element));
+  });
+}
+
+async function clickSubscribeIfReady(): Promise<boolean> {
+  await delay(450);
+  const button = findSubscribeButton();
+  if (!button || !isVisible(button) || isBusyOrDisabled(button)) {
+    return false;
+  }
+  clickElement(button);
+  return true;
+}
+
+function findSubscribeButton(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(HOSTED_PAYMENT_SUBMIT_BUTTON_SELECTOR);
+}
+
+function isBusyOrDisabled(element: HTMLElement): boolean {
+  const button = element as HTMLButtonElement;
+  const visibleText = normalizedText(
+    Array.from(element.querySelectorAll<HTMLElement>('[aria-hidden="false"], [aria-hidden]:not([aria-hidden="true"])'))
+      .filter(isVisible)
+      .map((item) => item.innerText || item.textContent || '')
+      .join(' ') || element.innerText || element.textContent,
+  );
+  const stateText = normalizedText([
+    element.getAttribute('aria-busy'),
+    element.getAttribute('data-loading'),
+    element.getAttribute('data-processing'),
+    element.getAttribute('data-state'),
+  ].join(' '));
+  return Boolean(button.disabled) ||
+    element.getAttribute('aria-disabled') === 'true' ||
+    stateText.includes('processing') ||
+    stateText.includes('loading') ||
+    visibleText.includes('processing') ||
+    visibleText.includes('loading') ||
+    visibleText.includes('正在处理') ||
+    visibleText.includes('加载');
 }
 
 function fillInput(selector: string, value: string, overwrite: boolean): number {
@@ -286,12 +401,18 @@ function emitChange(element: HTMLElement): void {
 
 function clickElement(element: HTMLElement): void {
   element.scrollIntoView({ block: 'center', inline: 'center' });
+  const rect = element.getBoundingClientRect();
+  const clientX = rect.left + rect.width / 2;
+  const clientY = rect.top + rect.height / 2;
   for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
     const EventCtor = type.startsWith('pointer') ? PointerEvent : MouseEvent;
     element.dispatchEvent(new EventCtor(type, {
       bubbles: true,
       cancelable: true,
       composed: true,
+      view: window,
+      clientX,
+      clientY,
       button: 0,
       buttons: type.endsWith('down') ? 1 : 0,
       pointerId: 1,
@@ -365,6 +486,29 @@ function isSensitivePaymentField(element: Element): boolean {
     'expiry',
     'expiration',
   ].some((needle) => haystack.includes(needle));
+}
+
+function findFirstVisibleControl(selector: string): HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null {
+  const element = document.querySelector(selector);
+  if ((isTextControl(element) || isSelectControl(element)) && isVisible(element) && !isSensitivePaymentField(element)) {
+    return element;
+  }
+  return null;
+}
+
+function controlHasValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, expectedValues: string[]): boolean {
+  if (isSelectControl(element)) {
+    const selected = element.selectedOptions[0];
+    const value = normalizedText(`${element.value} ${selected?.textContent || ''}`);
+    return Boolean(value) && expectedValues.some((expected) => value.includes(normalizedText(expected)));
+  }
+
+  const value = normalizedText(element.value);
+  return Boolean(value);
+}
+
+function isRadioInput(element: Element | null): element is HTMLInputElement {
+  return Boolean(element && element instanceof HTMLInputElement && element.type === 'radio');
 }
 
 function isTextControl(element: Element | null): element is HTMLInputElement | HTMLTextAreaElement {
