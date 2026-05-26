@@ -1,4 +1,4 @@
-import { cp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -10,11 +10,11 @@ export async function prepareNativeHostOutput(options = {}) {
   const outputDir = resolve(options.outputDir || DEFAULT_OUTPUT_DIR);
   await mkdir(outputDir, { recursive: true });
 
-  await copyDirectory(resolve(repoRoot, 'native-host'), resolve(outputDir, 'native-host'));
-  await copyDirectory(resolve(repoRoot, 'local-service'), resolve(outputDir, 'local-service'));
+  await rm(resolve(outputDir, 'native-host'), { recursive: true, force: true });
+  await rm(resolve(outputDir, 'local-service'), { recursive: true, force: true });
   await writeFile(
     resolve(outputDir, 'register-native-host.ps1'),
-    createRegisterScript(),
+    createRegisterScript(repoRoot),
     'ascii',
   );
   await writeFile(
@@ -24,21 +24,8 @@ export async function prepareNativeHostOutput(options = {}) {
   );
 }
 
-async function copyDirectory(from, to) {
-  await cp(from, to, {
-    recursive: true,
-    force: true,
-    filter: (source) => !shouldSkipGeneratedNativeHostFile(source),
-  });
-}
-
-function shouldSkipGeneratedNativeHostFile(source) {
-  return /(?:^|[\\/])opx-native-host\.exe$/i.test(source) ||
-    /(?:^|[\\/])opx-native-host\.node-path\.txt$/i.test(source) ||
-    /(?:^|[\\/])com\.openai_plus_vxt\.local_store\.json$/i.test(source);
-}
-
-function createRegisterScript() {
+function createRegisterScript(sourceRoot) {
+  const escapedSourceRoot = sourceRoot.replace(/'/g, "''");
   return `param(
   [string]$ExtensionId = "",
   [ValidateSet("Chrome", "Edge", "Both")]
@@ -46,8 +33,8 @@ function createRegisterScript() {
 )
 
 $ErrorActionPreference = "Stop"
-$OutputDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Installer = Join-Path $OutputDir "native-host\\install-native-host.ps1"
+$SourceRoot = '${escapedSourceRoot}'
+$Installer = Join-Path $SourceRoot "native-host\\install-native-host.ps1"
 
 if (-not $ExtensionId) {
   $ExtensionId = Read-Host "Enter the extension ID shown in chrome://extensions"

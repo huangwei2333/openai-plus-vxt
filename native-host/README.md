@@ -8,6 +8,7 @@ The extension can start the local account service through Chrome Native Messagin
 2. Enable developer mode.
 3. Copy the extension ID for the loaded `openai-plus-vxt` extension.
 4. Register the native host. The installer records the current `node.exe` path, compiles `opx-native-host.cs` to a small local `opx-native-host.exe`, and writes the Chrome Native Messaging registry entry.
+   The generated host files are installed under `%USERPROFILE%\.openai-plus-vxt\native-host-install` by default, so rebuilding `.output/chrome-mv3` does not remove the registered Native Host.
 
 From the source repo:
 
@@ -41,6 +42,7 @@ pnpm native:install -- -ExtensionId <edge-extension-id> -Browser Edge
 - If the HTTP service is unavailable, the background service worker sends `ensure-local-store` to `com.openai_plus_vxt.local_store`.
 - Chrome starts the generated `opx-native-host.exe`.
 - The native host starts `local-service/server.mjs` and returns after `/health` succeeds.
+- The Chrome registry entry points at the stable `%USERPROFILE%\.openai-plus-vxt\native-host-install` copy, not the temporary WXT build output.
 - Services started by the native host exit automatically after 10 minutes without requests.
 
 Manual startup still works:

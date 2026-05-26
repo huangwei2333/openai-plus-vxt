@@ -62,7 +62,7 @@ export function createAccountsPanel(container: HTMLElement): FeaturePanelHandle 
   let records: AccountRecord[] = [];
   let polling = false;
 
-  container.append(summary, selectRow, buttonRow, list, status);
+  container.append(summary, selectRow, buttonRow, status, list);
 
   selectAllCheckbox.addEventListener('change', () => void setAllSelected(selectAllCheckbox.checked));
   refreshButton.addEventListener('click', () => void saveCurrentSession());
@@ -413,41 +413,35 @@ export function createAccountsPanel(container: HTMLElement): FeaturePanelHandle 
     main.className = 'opx-account-main';
     const email = document.createElement('strong');
     email.textContent = record.email;
-    const meta = document.createElement('span');
-    meta.textContent = [
-      `套餐：${record.planType || '未知'}`,
-      `套餐剩余：${runtime.planRemainingText}`,
-      `session：${runtime.sessionRemainingText}`,
-    ].join(' · ');
+    const meta = document.createElement('div');
+    meta.className = 'opx-account-meta';
+    const plan = document.createElement('span');
+    plan.className = `opx-account-plan is-${getPlanTone(record.planType)}`;
+    plan.textContent = `套餐：${record.planType || '未知'}`;
+    const planRemaining = document.createElement('span');
+    planRemaining.textContent = `套餐剩余：${runtime.planRemainingText}`;
+    const sessionRemaining = document.createElement('span');
+    sessionRemaining.textContent = `session：${runtime.sessionRemainingText}`;
+    meta.append(plan, planRemaining, sessionRemaining);
 
-    const chipRow = document.createElement('div');
-    chipRow.className = 'opx-account-chip-row';
-    const subscriptionStatusChip = document.createElement('span');
-    subscriptionStatusChip.textContent = `订阅状态：${formatSubscriptionStatus(record.subscriptionStatus)}`;
-    const subscriptionTypeChip = document.createElement('span');
-    subscriptionTypeChip.textContent = `订阅类型：${formatSubscriptionType(record)}`;
-    chipRow.append(subscriptionStatusChip, subscriptionTypeChip);
-
-    main.append(email, meta, chipRow);
+    main.append(email, meta);
 
     const actions = document.createElement('div');
     actions.className = 'opx-account-row-actions';
 
-    const action = document.createElement('button');
-    action.className = runtime.planExpired ? 'opx-mini-button opx-mini-button-danger' : 'opx-mini-button opx-mini-button-secondary';
-    action.type = 'button';
-    if (runtime.planExpired) {
-      action.textContent = '已过期';
-      action.disabled = true;
-    } else if (runtime.sessionExpired) {
-      action.textContent = '重新登录';
-      action.addEventListener('click', () => void startRelogin(record));
-    } else {
-      action.textContent = '正常';
-      action.disabled = true;
-    }
+    const sessionButton = createButton('session', 'opx-mini-button opx-mini-button-secondary');
+    sessionButton.title = '复制账号 session';
+    sessionButton.addEventListener('click', () => void copyAccountSession(record)
+      .then(() => setStatus(status, 'Chat GPT Session 复制成功', 'ok'))
+      .catch((error) => setStatus(status, `复制 session 失败：${String(error)}`, 'error')));
 
-    actions.append(action);
+    const infoButton = createButton('信息', 'opx-mini-button opx-mini-button-secondary');
+    infoButton.title = '复制账号信息和长链接';
+    infoButton.addEventListener('click', () => void copyAccountInfo(record)
+      .then(() => setStatus(status, '账号信息复制成功', 'ok'))
+      .catch((error) => setStatus(status, `复制账号信息失败：${String(error)}`, 'error')));
+
+    actions.append(sessionButton, infoButton);
     row.append(checkbox, main, actions);
     return row;
   }
@@ -469,28 +463,33 @@ function groupAccountsByOriginalEmail(records: AccountRecord[]): Array<{ origina
     }));
 }
 
-function normalizeSubscriptionTypeInput(value: string): string {
-  return value.trim().toLowerCase() || 'unknown';
+function getPlanTone(planType: string): 'plus' | 'free' | 'unknown' {
+  const normalized = planType.trim().toLowerCase();
+  if (normalized === 'plus') {
+    return 'plus';
+  }
+  if (normalized === 'free') {
+    return 'free';
+  }
+  return 'unknown';
 }
 
-function formatSubscriptionStatus(value: AccountRecord['subscriptionStatus']): string {
-  if (value === 'not_subscribed') {
-    return '未订阅';
-  }
-  if (value === 'active') {
-    return '已订阅';
-  }
-  if (value === 'expired') {
-    return '已过期';
-  }
-  if (value === 'failed') {
-    return '订阅失败';
-  }
-  return '未知';
+async function copyAccountSession(record: AccountRecord): Promise<void> {
+  await navigator.clipboard.writeText(serializeAccountsForExport([record], new Set([record.id])));
 }
 
-function formatSubscriptionType(record: AccountRecord): string {
-  return normalizeSubscriptionTypeInput(record.subscriptionType || record.planType || 'unknown');
+async function copyAccountInfo(record: AccountRecord): Promise<void> {
+  const lines = [
+    `email: ${record.email}`,
+    `plan: ${record.planType || 'unknown'}`,
+    `subscription_status: ${record.subscriptionStatus || 'unknown'}`,
+    `subscription_type: ${record.subscriptionType || record.planType || 'unknown'}`,
+    `checkoutUrl: ${record.checkoutUrl || ''}`,
+    `session_expired_at: ${record.sessionExpiredAt || ''}`,
+    `plan_expires_at: ${record.planExpiresAt || ''}`,
+    `account_id: ${record.accountId || ''}`,
+  ];
+  await navigator.clipboard.writeText(lines.join('\n'));
 }
 
 function createButton(label: string, className = 'opx-button'): HTMLButtonElement {

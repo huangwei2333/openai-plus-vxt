@@ -103,6 +103,13 @@ function delay(ms) {
 }
 
 async function main() {
+  if (process.argv.includes('--ensure-local-store-json')) {
+    const response = await ensureLocalStoreRunning();
+    process.stdout.write(JSON.stringify(response));
+    process.exit(0);
+    return;
+  }
+
   let response;
   try {
     const message = await readNativeMessage();

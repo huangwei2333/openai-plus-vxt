@@ -22,9 +22,7 @@ test('register workflow exposes the full automation path from registration to Pa
   assert.deepEqual(
     REGISTER_WORKFLOW_STEPS.map((step) => step.id),
     [
-      'email',
-      'address',
-      'sms',
+      'check-registration',
       'open-register',
       'submit-email',
       'submit-otp',
@@ -56,14 +54,12 @@ test('register workflow progress text counts completed and skipped steps', () =>
 test('register workflow resume keeps previous steps and resets failed step onward', () => {
   const statuses = getInitialWorkflowStatuses();
   statuses[0] = 'completed';
-  statuses[1] = 'skipped';
-  statuses[2] = 'completed';
-  statuses[3] = 'failed';
-  statuses[4] = 'failed';
+  statuses[1] = 'failed';
+  statuses[2] = 'failed';
 
   assert.deepEqual(
     getResumeWorkflowStatuses(statuses, 'open-register').slice(0, 6),
-    ['completed', 'skipped', 'completed', 'pending', 'pending', 'pending'],
+    ['completed', 'pending', 'pending', 'pending', 'pending', 'pending'],
   );
 });
 
@@ -131,11 +127,11 @@ test('paypal manual challenge continue is allowed on PayPal registration steps',
 test('existing session shortcut skips registration steps and resumes at read-session', () => {
   const statuses = getExistingSessionWorkflowStatuses();
 
-  assert.deepEqual(statuses.slice(0, 7), Array.from({ length: 7 }, () => 'skipped'));
-  assert.equal(REGISTER_WORKFLOW_STEPS[7].id, 'read-session');
-  assert.equal(statuses[7], 'pending');
-  assert.equal(statuses[8], 'pending');
-  assert.equal(getWorkflowProgressText(statuses), `7 / ${REGISTER_WORKFLOW_STEPS.length}`);
+  assert.deepEqual(statuses.slice(0, 5), Array.from({ length: 5 }, () => 'skipped'));
+  assert.equal(REGISTER_WORKFLOW_STEPS[5].id, 'read-session');
+  assert.equal(statuses[5], 'pending');
+  assert.equal(statuses[6], 'pending');
+  assert.equal(getWorkflowProgressText(statuses), `5 / ${REGISTER_WORKFLOW_STEPS.length}`);
 });
 
 test('manual workflow session input accepts accessToken text and session JSON', () => {

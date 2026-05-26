@@ -3,7 +3,6 @@ import type { LocalStoreMessage, LocalStoreResponse, NativeLocalStoreLaunchRespo
 const DEFAULT_LOCAL_STORE_BASE = 'http://127.0.0.1:8788';
 const NATIVE_HOST_NAME = 'com.openai_plus_vxt.local_store';
 const REQUEST_TIMEOUT_MS = 5_000;
-const AUTH_TOKEN_STORAGE_KEY = 'opx:local-store-auth-token';
 
 export async function requestLocalStore(message: LocalStoreMessage): Promise<LocalStoreResponse> {
   try {
@@ -28,75 +27,62 @@ export async function requestLocalStore(message: LocalStoreMessage): Promise<Loc
 }
 
 async function dispatchLocalStoreRequest(message: LocalStoreMessage): Promise<LocalStoreResponse> {
-    const authToken = await getLocalStoreAuthToken();
     switch (message.type) {
       case 'opx:local-store-health':
         return await request('/health');
       case 'opx:local-store-get':
-        return await request('/v1/store', { authToken });
+        return await request('/v1/store');
       case 'opx:local-store-upsert-session':
         return await request('/v1/accounts/session', {
           method: 'POST',
           body: { account: message.account },
-          authToken,
         });
       case 'opx:local-store-import-accounts':
         return await request('/v1/import/accounts', {
           method: 'POST',
           body: message.payload,
-          authToken,
         });
       case 'opx:local-store-update-account':
         return await request(`/v1/accounts/${encodeURIComponent(message.accountId)}`, {
           method: 'PATCH',
           body: message.patch,
-          authToken,
         });
       case 'opx:local-store-delete-account':
         return await request(`/v1/accounts/${encodeURIComponent(message.accountId)}`, {
           method: 'DELETE',
-          authToken,
         });
       case 'opx:local-store-upsert-register-email-items':
         return await request('/v1/register-email-items', {
           method: 'POST',
           body: { items: message.items },
-          authToken,
         });
       case 'opx:local-store-delete-register-email-item':
         return await request(`/v1/register-email-items/${encodeURIComponent(message.itemId)}`, {
           method: 'DELETE',
-          authToken,
         });
       case 'opx:local-store-upsert-sms-targets':
         return await request('/v1/sms-targets', {
           method: 'POST',
           body: { targets: message.targets },
-          authToken,
         });
       case 'opx:local-store-delete-sms-target':
         return await request(`/v1/sms-targets/${encodeURIComponent(message.targetId)}`, {
           method: 'DELETE',
-          authToken,
         });
       case 'opx:local-store-update-sms-relay':
         return await request('/v1/sms-relay', {
           method: 'PATCH',
           body: message.patch,
-          authToken,
         });
     }
 }
 
-async function request(path: string, options: { method?: string; body?: unknown; authToken?: string } = {}): Promise<LocalStoreResponse> {
+async function request(path: string, options: { method?: string; body?: unknown } = {}): Promise<LocalStoreResponse> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const headers: Record<string, string> = {};
   if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json';
-  }
-  if (options.authToken) {
-    headers['X-OPX-Local-Store-Token'] = options.authToken;
   }
   try {
     const response = await fetch(`${DEFAULT_LOCAL_STORE_BASE}${path}`, {
@@ -158,10 +144,8 @@ async function ensureLocalStoreStarted(): Promise<NativeLocalStoreLaunchResponse
   }
 
   try {
-    const token = await getLocalStoreAuthToken();
     const response = await runtime.sendNativeMessage(NATIVE_HOST_NAME, {
       command: 'ensure-local-store',
-      token,
     });
     return normalizeNativeLaunchResponse(response);
   } catch (error) {
@@ -170,28 +154,6 @@ async function ensureLocalStoreStarted(): Promise<NativeLocalStoreLaunchResponse
       message: `Native Host 未安装或启动失败：${String(error)}`,
     };
   }
-}
-
-async function getLocalStoreAuthToken(): Promise<string> {
-  const saved = await browser.storage.local.get(AUTH_TOKEN_STORAGE_KEY).catch(() => ({}));
-  const existing = stringValue((saved as Record<string, unknown>)[AUTH_TOKEN_STORAGE_KEY]);
-  if (existing) {
-    return existing;
-  }
-
-  const token = createAuthToken();
-  await browser.storage.local.set({ [AUTH_TOKEN_STORAGE_KEY]: token }).catch(() => undefined);
-  return token;
-}
-
-function createAuthToken(): string {
-  const cryptoApi = globalThis.crypto;
-  if (cryptoApi?.getRandomValues) {
-    const bytes = new Uint8Array(32);
-    cryptoApi.getRandomValues(bytes);
-    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function normalizeNativeLaunchResponse(value: unknown): NativeLocalStoreLaunchResponse {

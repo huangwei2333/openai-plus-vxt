@@ -49,3 +49,9 @@ extension ID is passed, it prompts for the ID shown in `chrome://extensions`.
 After registration, the extension will try to start this service automatically
 when it opens or reads shared account data. A service started this way exits
 after 10 minutes without requests.
+
+The Native Host installer copies the host and service files to
+`%USERPROFILE%\.openai-plus-vxt\native-host-install` by default before
+registering them, so rebuilding `.output/chrome-mv3` does not break automatic
+startup. If `OPX_LOCAL_STORE_DIR` is set, the installer uses that directory
+instead.

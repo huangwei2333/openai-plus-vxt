@@ -40,7 +40,7 @@ export function createWorkflowRunControl(): WorkflowRunControl {
 
 export function getWorkflowPrimaryButtonLabel(control: Pick<WorkflowRunControl, 'running' | 'stopRequested'>): string {
   if (!control.running) {
-    return '注册与订阅';
+    return '开始';
   }
   return control.stopRequested ? '停止中...' : '停止自动化';
 }

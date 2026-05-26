@@ -28,7 +28,7 @@ export function createRegisterPanel(container: HTMLElement, controller: Register
   status.className = 'opx-status';
   status.textContent = '等待添加邮箱';
 
-  let expanded = false;
+  let expanded = true;
 
   const update = async () => {
     const saved = await controller.loadState();
@@ -64,6 +64,11 @@ export function createRegisterPanel(container: HTMLElement, controller: Register
   });
 
   refreshEmailButton.addEventListener('click', async () => {
+    const ready = await ensureLocalStoreReady();
+    if (!ready.ok) {
+      setStatus(status, ready.message, 'error');
+      return;
+    }
     setStatus(status, '正在刷新本地邮箱列表...', 'pending');
     await update();
     setStatus(status, '邮箱列表已刷新', 'ok');
@@ -77,6 +82,30 @@ export function createRegisterPanel(container: HTMLElement, controller: Register
   container.append(emailInputRow, selectedSummary, emailList, status);
   void update();
   return { update };
+}
+
+async function ensureLocalStoreReady(): Promise<{ ok: boolean; message: string }> {
+  const response = await browser.runtime.sendMessage({ type: 'opx:local-store-health' }).catch((error) => ({
+    ok: false,
+    message: error instanceof Error ? error.message : String(error),
+  }));
+  if (isLocalStoreHealthResponse(response) && response.ok) {
+    return { ok: true, message: '' };
+  }
+  return {
+    ok: false,
+    message: isLocalStoreHealthResponse(response) && response.message
+      ? response.message
+      : '本地账号服务未启动，且自动启动失败。',
+  };
+}
+
+function isLocalStoreHealthResponse(value: unknown): value is { ok: boolean; message?: string } {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      typeof (value as { ok?: unknown }).ok === 'boolean',
+  );
 }
 
 function renderSelectedSummary(button: HTMLButtonElement, items: RegisterEmailItem[], expanded: boolean): void {

@@ -167,6 +167,12 @@ export function createPanel(root: ShadowRoot, registerController: RegisterContro
     await saveActiveTab(tab);
     renderActiveTab();
     await handles[tab].onShow?.();
+    if (tab === 'register') {
+      await showPanelHandles(registerEmbeddedHandles);
+    }
+    if (tab === 'config') {
+      await showPanelHandles(configEmbeddedHandles);
+    }
     await updateState();
   };
 
@@ -189,14 +195,10 @@ export function createPanel(root: ShadowRoot, registerController: RegisterContro
     state.textContent = getStateLabel(activeTab, registerController);
     await handles[activeTab].update();
     if (activeTab === 'register') {
-      for (const handle of registerEmbeddedHandles) {
-        await handle.update();
-      }
+      await updatePanelHandles(registerEmbeddedHandles);
     }
     if (activeTab === 'config') {
-      for (const handle of configEmbeddedHandles) {
-        await handle.update();
-      }
+      await updatePanelHandles(configEmbeddedHandles);
     }
   };
 
@@ -222,29 +224,25 @@ export function createPanel(root: ShadowRoot, registerController: RegisterContro
   void updateState().then(() => {
     void handles[activeTab].onShow?.();
     if (activeTab === 'register') {
-      for (const handle of registerEmbeddedHandles) {
-        void handle.update();
-      }
+      void showPanelHandles(registerEmbeddedHandles);
     }
     if (activeTab === 'config') {
-      for (const handle of configEmbeddedHandles) {
-        void handle.update();
-      }
+      void showPanelHandles(configEmbeddedHandles);
     }
   });
 }
 
 function getStateLabel(activeTab: FeatureTab, registerController: RegisterController): string {
   if (activeTab === 'register') {
-    return '注册：邮箱生成与资料准备';
+    return '';
   }
   if (activeTab === 'subscription') {
-    return `订阅：${registerController.getPageState().label}`;
+    return '';
   }
   if (activeTab === 'config') {
     return '配置：邮箱、地址与接码维护';
   }
-  return '账号：成功账号与 session';
+  return '';
 }
 
 function createView(): HTMLElement {
@@ -266,6 +264,18 @@ function createNoopPanelHandle(): FeaturePanelHandle {
   return {
     update: () => {},
   };
+}
+
+async function showPanelHandles(handles: FeaturePanelHandle[]): Promise<void> {
+  for (const handle of handles) {
+    await handle.onShow?.();
+  }
+}
+
+async function updatePanelHandles(handles: FeaturePanelHandle[]): Promise<void> {
+  for (const handle of handles) {
+    await handle.update();
+  }
 }
 
 function createWorkflowSelection(visibleSection?: RegisterWorkflowSectionId): RegisterWorkflowStepSelection {
@@ -334,7 +344,7 @@ function createRegisterWorkflowPanel(
     ? '粘贴账号页面复制的账号信息，格式同 codex_accounts.json'
     : '留空时自动读取当前 ChatGPT session；也可粘贴 session JSON 或 accessToken';
   sessionInput.spellcheck = false;
-  sessionInput.rows = isSubscriptionPanel ? 4 : 2;
+  sessionInput.rows = 2;
   sessionField.append(sessionLabel, sessionInput);
   const selectedPhone = document.createElement('div');
   selectedPhone.className = 'opx-workflow-phone';
@@ -342,11 +352,11 @@ function createRegisterWorkflowPanel(
   const startButton = document.createElement('button');
   startButton.className = 'opx-button';
   startButton.type = 'button';
-  const actionRow = document.createElement('div');
-  actionRow.className = 'opx-workflow-actions';
-  actionRow.append(startButton);
   const progress = document.createElement('div');
   progress.className = 'opx-workflow-progress';
+  const workflowHeader = document.createElement('div');
+  workflowHeader.className = 'opx-workflow-header';
+  workflowHeader.append(progress, startButton);
   const list = document.createElement('div');
   list.className = 'opx-workflow-list';
   const status = document.createElement('div');
@@ -366,7 +376,7 @@ function createRegisterWorkflowPanel(
   let currentWorkflowEmail = '';
   let selectedSmsRelayTarget: SmsRelayTarget | null = null;
   syncSkippedSteps(0);
-  container.append(sessionField, selectedPhone, actionRow, progress, list, status, otpDialog.element);
+  container.append(sessionField, selectedPhone, workflowHeader, list, status, otpDialog.element);
   render();
 
   sessionInput.addEventListener('input', () => {
@@ -455,7 +465,7 @@ function createRegisterWorkflowPanel(
       }
       currentWorkflowEmail = resolveWorkflowEmail(context) || currentWorkflowEmail;
 
-      if (context.existingSession && shouldRunStep('email')) {
+      if (context.existingSession && shouldRunStep('check-registration')) {
         statuses = getExistingSessionWorkflowStatuses();
         syncSkippedSteps(resumeIndex);
         setStatus(
@@ -467,21 +477,20 @@ function createRegisterWorkflowPanel(
         );
         render();
       } else if (!context.existingSession) {
-        if (shouldRunStep('email')) await runStep('email', async () => {
+        if (shouldRunStep('check-registration')) await runStep('check-registration', async () => {
           const state = await controller.loadState();
           const selected = state.emailItems.find((item) => item.selected);
           if (!selected) {
             return fail('请先添加并选择一个原邮箱。');
           }
+          const addressSettings = await loadWorkflowAddressSettings();
+          if (!addressSettings.ok || !addressSettings.data) {
+            return fail(addressSettings.message);
+          }
+          context.addressSettings = addressSettings.data;
           currentWorkflowEmail = selected.email;
           render();
-          return ok(`已选择邮箱：${selected.email}`, state);
-        });
-
-        if (shouldRunStep('address')) context.addressSettings = await runStep('address', loadWorkflowAddressSettings);
-
-        if (shouldRunStep('sms')) await runStep('sms', async () => {
-          return ok('Email OTP will be entered manually.', null);
+          return ok(`已选择邮箱：${selected.email}；地址资料已就绪`, state);
         });
 
         if (shouldRunStep('open-register')) await runStep('open-register', async () => {
@@ -998,22 +1007,27 @@ function createRegisterWorkflowPanel(
     ));
     const section = document.createElement('section');
     section.className = 'opx-workflow-section';
+    section.classList.toggle('is-readonly', !isSubscriptionPanel);
     const header = document.createElement('div');
     header.className = 'opx-workflow-section-header';
-    const checkbox = createWorkflowCheckbox(areSectionStepsSelected(sectionId), (checked) => {
-      stepSelection = setVisibleWorkflowSectionSelected(stepSelection, sectionId, checked);
-      syncSkippedSteps(0);
-      render();
-    });
-    checkbox.disabled = runControl.running;
-    checkbox.indeterminate = isSectionSelectionIndeterminate(sectionId);
     const label = document.createElement('span');
     label.className = 'opx-workflow-section-title';
     label.textContent = title;
     const state = document.createElement('span');
     state.className = 'opx-workflow-section-state';
     state.textContent = getSectionSummary(groups);
-    header.append(checkbox, label, state);
+    if (isSubscriptionPanel) {
+      const checkbox = createWorkflowCheckbox(areSectionStepsSelected(sectionId), (checked) => {
+        stepSelection = setVisibleWorkflowSectionSelected(stepSelection, sectionId, checked);
+        syncSkippedSteps(0);
+        render();
+      });
+      checkbox.disabled = runControl.running;
+      checkbox.indeterminate = isSectionSelectionIndeterminate(sectionId);
+      header.append(checkbox, label, state);
+    } else {
+      header.append(label, state);
+    }
     section.append(header);
     for (const group of groups) {
       section.append(renderWorkflowGroup(group));

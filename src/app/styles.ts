@@ -588,8 +588,9 @@ export const PANEL_STYLES = `
   align-items: center;
   gap: 6px;
   width: fit-content;
+  max-width: min(100%, 220px);
   min-height: 22px;
-  margin: 0 0 8px;
+  margin: 0;
   padding: 2px 8px;
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 999px;
@@ -598,6 +599,22 @@ export const PANEL_STYLES = `
   font-size: 11px;
   font-weight: 700;
   line-height: 16px;
+}
+
+.opx-workflow-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.opx-workflow-header .opx-button {
+  width: auto;
+  min-width: 76px;
+  min-height: 28px;
+  margin-left: auto;
+  padding: 0 12px;
+  white-space: nowrap;
 }
 
 .opx-workflow-email-copy {
@@ -674,9 +691,9 @@ export const PANEL_STYLES = `
 }
 
 .opx-workflow-account-input {
-  height: 96px;
-  min-height: 96px;
-  max-height: 132px;
+  height: 54px;
+  min-height: 54px;
+  max-height: 54px;
 }
 
 .opx-workflow-phone {
@@ -712,6 +729,10 @@ export const PANEL_STYLES = `
   align-items: center;
   min-height: 28px;
   padding: 0 2px;
+}
+
+.opx-workflow-section.is-readonly .opx-workflow-section-header {
+  grid-template-columns: minmax(0, 1fr) 62px;
 }
 
 .opx-workflow-section-title {
@@ -983,26 +1004,31 @@ export const PANEL_STYLES = `
   overflow-wrap: anywhere;
 }
 
-.opx-account-chip-row {
+.opx-account-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px 8px;
 }
 
-.opx-account-chip-row span {
-  width: fit-content;
-  padding: 2px 6px;
-  border: 1px solid rgba(47, 209, 124, 0.28);
-  border-radius: 999px;
-  background: rgba(20, 83, 45, 0.18);
-  color: #bbf7d0;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 14px;
+.opx-account-plan {
+  font-weight: 800;
+}
+
+.opx-account-plan.is-plus {
+  color: #86efac;
+}
+
+.opx-account-plan.is-free {
+  color: #facc15;
+}
+
+.opx-account-plan.is-unknown {
+  color: #94a3b8;
 }
 
 .opx-account-row-actions {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
 }
 

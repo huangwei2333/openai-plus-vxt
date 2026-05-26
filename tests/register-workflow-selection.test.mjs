@@ -20,7 +20,7 @@ test('workflow step groups split registration and subscription steps', () => {
       stepIds: group.stepIds,
     })),
     [
-      { id: 'register-prep', sectionId: 'register', stepIds: ['email', 'address', 'sms'] },
+      { id: 'register-prep', sectionId: 'register', stepIds: ['check-registration'] },
       { id: 'register-submit', sectionId: 'register', stepIds: ['open-register', 'submit-email'] },
       { id: 'register-complete', sectionId: 'register', stepIds: ['submit-otp', 'fill-profile', 'read-session'] },
       { id: 'subscription-prep', sectionId: 'subscription', stepIds: ['create-checkout', 'open-checkout'] },
@@ -53,6 +53,8 @@ test('workflow section selection can choose registration or subscription only', 
   assert.equal(isWorkflowStepSelected(registrationOnly, 'read-session'), true);
   assert.equal(isWorkflowStepSelected(subscriptionOnly, 'submit-email'), false);
   assert.equal(isWorkflowStepSelected(subscriptionOnly, 'read-session'), false);
+  assert.equal(isWorkflowStepSelected(registrationOnly, 'check-registration'), true);
+  assert.equal(isWorkflowStepSelected(subscriptionOnly, 'check-registration'), false);
 });
 
 test('workflow can start only when at least one section is selected', () => {

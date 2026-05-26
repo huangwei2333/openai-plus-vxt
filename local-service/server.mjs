@@ -258,6 +258,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const idleTimeoutMs = Number(process.env.OPX_LOCAL_STORE_AUTO_EXIT_MS || 0);
   const server = createLocalStoreServer({ idleTimeoutMs });
   server.listen(port, HOST, () => {
-    console.log(`[OPX] Local account service listening on http://${HOST}:${port}`);
+    if (process.env.OPX_LOCAL_STORE_QUIET !== '1') {
+      console.log(`[OPX] Local account service listening on http://${HOST}:${port}`);
+    }
   });
 }

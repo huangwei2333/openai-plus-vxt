@@ -1,9 +1,7 @@
 import { extractAccessToken } from '../link-extractor/checkout.js';
 
 export type RegisterWorkflowStepId =
-  | 'email'
-  | 'address'
-  | 'sms'
+  | 'check-registration'
   | 'open-register'
   | 'submit-email'
   | 'submit-otp'
@@ -47,12 +45,10 @@ export interface SubmitOtpStepPageState {
 }
 
 export const REGISTER_WORKFLOW_STEPS: RegisterWorkflowStep[] = [
-  { id: 'email', label: '检查邮箱', automatable: true },
-  { id: 'address', label: '检查地址', automatable: true },
-  { id: 'sms', label: '验证码手动输入', automatable: true },
+  { id: 'check-registration', label: '检查注册资料', automatable: true },
   { id: 'open-register', label: '打开注册页', automatable: true },
   { id: 'submit-email', label: '生成并提交邮箱', automatable: true },
-  { id: 'submit-otp', label: '验证邮箱并进入资料页', automatable: true },
+  { id: 'submit-otp', label: '输入邮箱验证码', automatable: true },
   { id: 'fill-profile', label: '填写资料并创建', automatable: true },
   { id: 'read-session', label: '读取 session', automatable: true },
   { id: 'create-checkout', label: '生成长链接', automatable: true },
@@ -66,7 +62,7 @@ export const REGISTER_WORKFLOW_STEPS: RegisterWorkflowStep[] = [
 ];
 
 export const REGISTER_WORKFLOW_STEP_GROUPS: RegisterWorkflowStepGroup[] = [
-  { id: 'register-prep', sectionId: 'register', label: '准备资料', stepIds: ['email', 'address', 'sms'] },
+  { id: 'register-prep', sectionId: 'register', label: '准备资料', stepIds: ['check-registration'] },
   { id: 'register-submit', sectionId: 'register', label: '提交邮箱', stepIds: ['open-register', 'submit-email'] },
   { id: 'register-complete', sectionId: 'register', label: '完成注册', stepIds: ['submit-otp', 'fill-profile', 'read-session'] },
   { id: 'subscription-prep', sectionId: 'subscription', label: '准备订阅', stepIds: ['create-checkout', 'open-checkout'] },
@@ -76,9 +72,7 @@ export const REGISTER_WORKFLOW_STEP_GROUPS: RegisterWorkflowStepGroup[] = [
 ];
 
 const EXISTING_SESSION_SKIPPED_STEPS: RegisterWorkflowStepId[] = [
-  'email',
-  'address',
-  'sms',
+  'check-registration',
   'open-register',
   'submit-email',
   'submit-otp',

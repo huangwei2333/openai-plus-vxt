@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, copyFile, writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 
 import {
@@ -39,17 +39,22 @@ export function createStoreRepository(options = {}) {
   async function load() {
     await ensureDirs();
     if (!(await exists(storePath))) {
-      const empty = createEmptyStore();
+      const empty = await mergeCodexMirrorIntoStore(createEmptyStore(), { codexDir, codexIndexPath });
       await writeJsonAtomic(storePath, empty);
       return empty;
     }
     try {
       const content = await readFile(storePath, 'utf8');
-      return normalizeStore(JSON.parse(content));
+      const normalized = normalizeStore(JSON.parse(content));
+      const merged = await mergeCodexMirrorIntoStore(normalized, { codexDir, codexIndexPath }, { onlyIfNewerThanStore: true });
+      if (JSON.stringify(merged) !== JSON.stringify(normalized)) {
+        await writeJsonAtomic(storePath, merged);
+      }
+      return merged;
     } catch (error) {
       const damagedPath = join(storeDir, `store.damaged-${Date.now()}.json`);
       await rename(storePath, damagedPath).catch(() => undefined);
-      const empty = createEmptyStore();
+      const empty = await mergeCodexMirrorIntoStore(createEmptyStore(), { codexDir, codexIndexPath });
       await writeJsonAtomic(storePath, empty);
       return empty;
     }
@@ -184,6 +189,103 @@ export function createStoreRepository(options = {}) {
     deleteSmsTarget,
     patchSmsRelay,
   };
+}
+
+async function mergeCodexMirrorIntoStore(store, paths, options = {}) {
+  const index = await readExistingCodexIndex(paths.codexIndexPath);
+  if (!Array.isArray(index.baseEmails) || index.baseEmails.length === 0) {
+    return store;
+  }
+  if (options.onlyIfNewerThanStore) {
+    const storeHasData = store.accounts.length > 0 || store.registerEmailItems.length > 0;
+    const codexUpdatedAt = Number(index.updatedAt || 0);
+    if (storeHasData || (codexUpdatedAt > 0 && codexUpdatedAt <= store.updatedAt)) {
+      return store;
+    }
+  }
+
+  let accounts = store.accounts;
+  const registerEmailById = new Map(store.registerEmailItems.map((item) => [item.id, item]));
+  const importedAccounts = [];
+  for (const base of index.baseEmails) {
+    if (!base || typeof base !== 'object') {
+      continue;
+    }
+    const email = String(base.email || '').trim().toLowerCase();
+    if (!email) {
+      continue;
+    }
+    const inputMode = base.inputMode === 'outlook-line' ? 'outlook-line' : 'email';
+    const id = String(base.id || `${inputMode}:${email}`);
+    const previous = registerEmailById.get(id);
+    const aliases = [
+      ...(previous?.aliases || []),
+      ...normalizeCodexGeneratedAliases(base.generated),
+    ];
+    const normalized = normalizeRegisterEmailItems([{
+      id,
+      email,
+      accountLine: String(base.accountLine || previous?.accountLine || ''),
+      inputMode,
+      selected: base.selected !== false,
+      expanded: previous?.expanded || false,
+      aliases,
+    }])[0];
+    if (normalized) {
+      registerEmailById.set(id, normalized);
+    }
+
+    for (const generated of Array.isArray(base.generated) ? base.generated : []) {
+      const account = await readCodexGeneratedSession(generated, paths.codexDir);
+      if (account) {
+        importedAccounts.push(account);
+      }
+    }
+  }
+
+  if (importedAccounts.length) {
+    accounts = upsertAccounts(accounts, importedAccounts);
+  }
+
+  return normalizeStore({
+    ...store,
+    accounts,
+    registerEmailItems: [...registerEmailById.values()],
+  });
+}
+
+function normalizeCodexGeneratedAliases(generated) {
+  if (!Array.isArray(generated)) {
+    return [];
+  }
+  return generated
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const email = String(item.email || '').trim().toLowerCase();
+      const category = String(item.category || 'imported').trim() || 'imported';
+      return {
+        id: String(item.id || `${category}:${email}`),
+        email,
+        category,
+        createdAt: Number(item.createdAt || 0),
+      };
+    });
+}
+
+async function readCodexGeneratedSession(generated, codexDir) {
+  if (!generated || typeof generated !== 'object' || !generated.sessionFile) {
+    return null;
+  }
+  const root = resolve(codexDir);
+  const sessionPath = resolve(codexDir, String(generated.sessionFile));
+  if (sessionPath !== root && !sessionPath.startsWith(`${root}${sep}`)) {
+    return null;
+  }
+  try {
+    return JSON.parse(await readFile(sessionPath, 'utf8'));
+  } catch {
+    return null;
+  }
 }
 
 async function writeCodexMirror(store, paths) {

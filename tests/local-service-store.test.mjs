@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -218,5 +218,49 @@ test('mirrors saved session into codex account index and per-email session file'
     assert.equal(session.email, 'origin+paypal1@gmail.com');
     assert.equal(session.access_token, 'access.token');
     assert.equal(session.type, 'codex');
+  });
+});
+
+test('loads accounts and register email items from existing codex account mirror', async () => {
+  await withTempStore(async (dir) => {
+    await mkdir(join(dir, 'codex', 'accounts'), { recursive: true });
+    await writeFile(join(dir, 'codex', 'codex_accounts.json'), JSON.stringify({
+      version: 1,
+      baseEmails: [
+        {
+          email: 'origin@gmail.com',
+          accountLine: '',
+          inputMode: 'email',
+          selected: true,
+          generated: [
+            {
+              email: 'origin+paypal1@gmail.com',
+              category: 'plus-gmail',
+              sessionFile: 'accounts/origin+paypal1@gmail.com.json',
+              createdAt: 1779400000000,
+            },
+          ],
+        },
+      ],
+    }, null, 2), 'utf8');
+    await writeFile(join(dir, 'codex', 'accounts', 'origin+paypal1@gmail.com.json'), JSON.stringify({
+      id_token: 'id.token',
+      access_token: 'access.token',
+      refresh_token: 'refresh.token',
+      account_id: 'acct_123',
+      email: 'origin+paypal1@gmail.com',
+      type: 'codex',
+      expired: '2026-05-25T00:00:00.000Z',
+    }, null, 2), 'utf8');
+
+    const repo = createStoreRepository({ storeDir: dir });
+    const store = await repo.load();
+
+    assert.equal(store.registerEmailItems.length, 1);
+    assert.equal(store.registerEmailItems[0].email, 'origin@gmail.com');
+    assert.equal(store.registerEmailItems[0].aliases[0].email, 'origin+paypal1@gmail.com');
+    assert.equal(store.accounts.length, 1);
+    assert.equal(store.accounts[0].email, 'origin+paypal1@gmail.com');
+    assert.equal(store.accounts[0].accessToken, 'access.token');
   });
 });

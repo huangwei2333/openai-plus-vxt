@@ -11,7 +11,7 @@ test('workflow run control switches between start and stop states', () => {
 
   assert.equal(control.running, false);
   assert.equal(control.stopRequested, false);
-  assert.equal(getWorkflowPrimaryButtonLabel(control), '注册与订阅');
+  assert.equal(getWorkflowPrimaryButtonLabel(control), '开始');
 
   assert.equal(control.start(), true);
   assert.equal(control.running, true);
@@ -26,7 +26,7 @@ test('workflow run control switches between start and stop states', () => {
   control.finish();
   assert.equal(control.running, false);
   assert.equal(control.stopRequested, true);
-  assert.equal(getWorkflowPrimaryButtonLabel(control), '注册与订阅');
+  assert.equal(getWorkflowPrimaryButtonLabel(control), '开始');
 
   assert.equal(control.start(), true);
   assert.equal(control.running, true);
